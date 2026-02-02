@@ -103,6 +103,8 @@ namespace lfs::python {
         });
 
         state::TrainingCompleted::when([](const auto& e) {
+            if (e.user_stopped) return;
+
             if (e.success) {
                 const auto message = std::format(
                     "Training completed successfully!\n\n"

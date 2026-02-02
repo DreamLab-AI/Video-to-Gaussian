@@ -200,6 +200,7 @@ namespace lfs::vis {
                         .final_loss = 0.0f,
                         .elapsed_seconds = 0.0f,
                         .success = false,
+                        .user_stopped = false,
                         .error = error_msg}
                         .emit();
 
@@ -223,6 +224,7 @@ namespace lfs::vis {
                     .final_loss = 0.0f,
                     .elapsed_seconds = 0.0f,
                     .success = false,
+                    .user_stopped = false,
                     .error = error_msg}
                     .emit();
 
@@ -562,16 +564,14 @@ namespace lfs::vis {
         LOG_INFO("Training finished: iter={}, loss={:.6f}, time={:.1f}s",
                  final_iter, final_loss, elapsed);
 
-        // Skip popup for user-stopped (user knows they stopped it)
-        if (!user_stopped) {
-            state::TrainingCompleted{
-                .iteration = final_iter,
-                .final_loss = final_loss,
-                .elapsed_seconds = elapsed,
-                .success = success,
-                .error = error.empty() ? std::nullopt : std::optional(error)}
-                .emit();
-        }
+        state::TrainingCompleted{
+            .iteration = final_iter,
+            .final_loss = final_loss,
+            .elapsed_seconds = elapsed,
+            .success = success,
+            .user_stopped = user_stopped,
+            .error = error.empty() ? std::nullopt : std::optional(error)}
+            .emit();
 
         {
             std::lock_guard lock(completion_mutex_);

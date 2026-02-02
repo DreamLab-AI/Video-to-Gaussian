@@ -75,6 +75,8 @@ class StatusBarPanel(Panel):
             reason = lf.finish_reason()
             if reason == "completed":
                 return f"Complete ({strat_name}/{method})", p.success
+            if reason == "stopped":
+                return f"Stopped ({strat_name}/{method})", p.text_dim
             return f"Error ({strat_name}/{method})", p.error
 
         return "Dataset", p.text_dim
