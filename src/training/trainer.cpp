@@ -233,6 +233,12 @@ namespace lfs::training {
             return {};
         }
 
+        const bool alpha_available = scene_ && scene_->imagesHaveAlpha();
+        if (opt.use_alpha_as_mask && alpha_available) {
+            LOG_INFO("Using alpha channel as mask source{}", opt.invert_masks ? " (inverted)" : "");
+            return {};
+        }
+
         size_t masks_found = 0;
         for (const auto& cam : train_dataset_->get_cameras()) {
             if (cam && cam->has_mask()) {
@@ -540,6 +546,27 @@ namespace lfs::training {
             // Validate masks if mask mode is enabled
             if (auto result = validate_masks(); !result) {
                 return std::unexpected(result.error());
+            }
+
+            // Prepare undistortion for all cameras with distortion
+            if (params.optimization.undistort) {
+                int prepared = 0;
+                for (auto& cam : train_dataset_->get_cameras()) {
+                    if (cam && cam->has_distortion()) {
+                        cam->prepare_undistortion();
+                        ++prepared;
+                    }
+                }
+                if (val_dataset_) {
+                    for (auto& cam : val_dataset_->get_cameras()) {
+                        if (cam && cam->has_distortion()) {
+                            cam->prepare_undistortion();
+                        }
+                    }
+                }
+                if (prepared > 0) {
+                    LOG_INFO("Prepared undistortion for {} cameras", prepared);
+                }
             }
 
             // Initialize sparsity optimizer
@@ -993,18 +1020,17 @@ namespace lfs::training {
         RenderMode render_mode,
         std::stop_token stop_token) {
         try {
-            // GUT mode enables Gaussian Unscented Transform for lens distortion handling
             if (params_.optimization.gut) {
                 if (cam->camera_model_type() == core::CameraModelType::ORTHO) {
                     return std::unexpected("Training on cameras with ortho model is not supported yet.");
                 }
-            } else {
+            } else if (!params_.optimization.undistort || !cam->is_undistort_prepared()) {
                 if (cam->radial_distortion().numel() != 0 ||
                     cam->tangential_distortion().numel() != 0) {
-                    return std::unexpected("Distorted images detected.  You can use --gut option to train on cameras with distortion.");
+                    return std::unexpected("Distorted images detected. Use --gut or --undistort to train on cameras with distortion.");
                 }
                 if (cam->camera_model_type() != core::CameraModelType::PINHOLE) {
-                    return std::unexpected("You must use --gut option to train on cameras with non-pinhole model.");
+                    return std::unexpected("Use --gut or --undistort to train on cameras with non-pinhole model.");
                 }
             }
 
@@ -1232,7 +1258,8 @@ namespace lfs::training {
                 lfs::core::Tensor tile_grad;
                 lfs::core::Tensor tile_grad_alpha; // Gradient for alpha (from mask penalty)
 
-                const bool use_mask = params_.optimization.mask_mode != lfs::core::param::MaskMode::None && cam->has_mask();
+                const bool use_mask = params_.optimization.mask_mode != lfs::core::param::MaskMode::None &&
+                                      (cam->has_mask() || (params_.optimization.use_alpha_as_mask && scene_ && scene_->imagesHaveAlpha()));
                 if (use_mask) {
                     // Use pipelined mask if available, otherwise load from camera (fallback for validation, etc.)
                     lfs::core::Tensor mask;
@@ -1664,14 +1691,20 @@ namespace lfs::training {
                 LOG_INFO("{:.0f}% non-JPEG images, using {} cold threads", non_jpeg_ratio * 100.0f, cold_threads);
             }
 
-            // Configure mask loading if masks are enabled
+            const bool alpha_available = scene_ && scene_->imagesHaveAlpha();
             PipelinedMaskConfig mask_pipeline_config;
             if (params_.optimization.mask_mode != lfs::core::param::MaskMode::None) {
-                mask_pipeline_config.load_masks = true;
                 mask_pipeline_config.invert_masks = params_.optimization.invert_masks;
                 mask_pipeline_config.mask_threshold = params_.optimization.mask_threshold;
-                LOG_INFO("Mask loading enabled in pipeline (invert={}, threshold={})",
-                         mask_pipeline_config.invert_masks, mask_pipeline_config.mask_threshold);
+                if (params_.optimization.use_alpha_as_mask && alpha_available) {
+                    mask_pipeline_config.use_alpha_as_mask = true;
+                    LOG_INFO("Alpha-as-mask enabled (invert={}, threshold={})",
+                             mask_pipeline_config.invert_masks, mask_pipeline_config.mask_threshold);
+                } else {
+                    mask_pipeline_config.load_masks = true;
+                    LOG_INFO("Mask file loading enabled (invert={}, threshold={})",
+                             mask_pipeline_config.invert_masks, mask_pipeline_config.mask_threshold);
+                }
             }
 
             auto train_dataloader = create_infinite_pipelined_dataloader(

@@ -16,6 +16,7 @@
 
 namespace lfs::core {
     class Tensor;
+    struct UndistortParams;
 }
 
 namespace lfs::io {
@@ -39,6 +40,7 @@ namespace lfs::io {
         int resize_factor = 1;
         int max_width = 0;
         void* cuda_stream = nullptr;
+        const lfs::core::UndistortParams* undistort = nullptr;
     };
 
     struct CachedImageData {

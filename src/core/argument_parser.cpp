@@ -152,6 +152,7 @@ namespace {
             ::args::ValueFlag<int> max_width(dataset_group, "max_width", "Max width of images in px (default: 3840)", {"max-width"});
             ::args::Flag no_cpu_cache(dataset_group, "no_cpu_cache", "Disable CPU memory caching (default: enabled)", {"no-cpu-cache"});
             ::args::Flag no_fs_cache(dataset_group, "no_fs_cache", "Disable filesystem caching (default: enabled)", {"no-fs-cache"});
+            ::args::Flag undistort(dataset_group, "undistort", "Undistort images on-the-fly before training", {"undistort"});
 
             // =============================================================================
             // MASK OPTIONS
@@ -167,6 +168,7 @@ namespace {
                                                                                    {"ignore", lfs::core::param::MaskMode::Ignore},
                                                                                    {"alpha_consistent", lfs::core::param::MaskMode::AlphaConsistent}});
             ::args::Flag invert_masks(mask_group, "invert_masks", "Invert mask values (swap object/background)", {"invert-masks"});
+            ::args::Flag no_alpha_as_mask(mask_group, "no_alpha_as_mask", "Disable automatic alpha-as-mask for RGBA images", {"no-alpha-as-mask"});
 
             // =============================================================================
             // SPARSITY OPTIMIZATION
@@ -542,8 +544,10 @@ namespace {
                                         bg_modulation_flag = bool(bg_modulation),
                                         random_flag = bool(random),
                                         gut_flag = bool(gut),
+                                        undistort_flag = bool(undistort),
                                         enable_sparsity_flag = bool(enable_sparsity),
-                                        invert_masks_flag = bool(invert_masks)]() {
+                                        invert_masks_flag = bool(invert_masks),
+                                        no_alpha_as_mask_flag = bool(no_alpha_as_mask)]() {
                 auto& opt = params.optimization;
                 auto& ds = params.dataset;
 
@@ -602,11 +606,14 @@ namespace {
                 setFlag(bg_modulation_flag, opt.bg_modulation);
                 setFlag(random_flag, opt.random);
                 setFlag(gut_flag, opt.gut);
+                setFlag(undistort_flag, opt.undistort);
                 setFlag(enable_sparsity_flag, opt.enable_sparsity);
 
                 // Mask parameters
                 setVal(mask_mode_val, opt.mask_mode);
                 setFlag(invert_masks_flag, opt.invert_masks);
+                if (no_alpha_as_mask_flag)
+                    opt.use_alpha_as_mask = false;
                 // Also propagate to dataset config for loading
                 ds.invert_masks = opt.invert_masks;
                 ds.mask_threshold = opt.mask_threshold;

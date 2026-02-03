@@ -4,7 +4,6 @@
 
 #include "io/loaders/blender_loader.hpp"
 #include "core/camera.hpp"
-#include "core/image_io.hpp"
 #include "core/logger.hpp"
 #include "core/path_utils.hpp"
 #include "core/point_cloud.hpp"
@@ -15,6 +14,7 @@
 #include <format>
 #include <fstream>
 #include <nlohmann/json.hpp>
+#include "core/image_io.hpp"
 
 namespace lfs::io {
 
@@ -212,6 +212,15 @@ namespace lfs::io {
                 }
             }
 
+            bool images_have_alpha = false;
+            if (!cameras.empty()) {
+                try {
+                    auto [w, h, c] = lfs::core::get_image_info(cameras[0]->image_path());
+                    images_have_alpha = (c == 4);
+                } catch (const std::exception&) {
+                }
+            }
+
             if (options.progress) {
                 options.progress(60.0f, "Loading point cloud...");
             }
@@ -262,6 +271,7 @@ namespace lfs::io {
                     .cameras = std::move(cameras),
                     .point_cloud = std::move(point_cloud)},
                 .scene_center = scene_center,
+                .images_have_alpha = images_have_alpha,
                 .loader_used = name(),
                 .load_time = load_time,
                 .warnings = std::move(warnings)};

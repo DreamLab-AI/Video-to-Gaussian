@@ -87,6 +87,7 @@ namespace lfs::core {
             opt_json["pause_refine_after_reset"] = pause_refine_after_reset;
             opt_json["revised_opacity"] = revised_opacity;
             opt_json["gut"] = gut;
+            opt_json["undistort"] = undistort;
             opt_json["steps_scaler"] = steps_scaler;
             opt_json["sh_degree_interval"] = sh_degree_interval;
             opt_json["random"] = random;
@@ -113,6 +114,7 @@ namespace lfs::core {
             opt_json["mask_opacity_penalty_weight"] = mask_opacity_penalty_weight;
             opt_json["mask_opacity_penalty_power"] = mask_opacity_penalty_power;
             opt_json["mask_threshold"] = mask_threshold;
+            opt_json["use_alpha_as_mask"] = use_alpha_as_mask;
 
             return opt_json;
         }
@@ -301,6 +303,9 @@ namespace lfs::core {
             if (json.contains("gut")) {
                 params.gut = json["gut"];
             }
+            if (json.contains("undistort")) {
+                params.undistort = json["undistort"];
+            }
 
             if (json.contains("bg_mode")) {
                 const std::string mode = json["bg_mode"];
@@ -345,6 +350,9 @@ namespace lfs::core {
             }
             if (json.contains("mask_threshold")) {
                 params.mask_threshold = json["mask_threshold"];
+            }
+            if (json.contains("use_alpha_as_mask")) {
+                params.use_alpha_as_mask = json["use_alpha_as_mask"];
             }
 
             return params;

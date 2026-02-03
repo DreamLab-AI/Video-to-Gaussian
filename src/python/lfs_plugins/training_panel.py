@@ -262,6 +262,16 @@ class TrainingPanel(Panel):
                 if layout.is_item_hovered():
                     layout.set_tooltip(tr("training.tooltip.invert_masks"))
 
+                layout.table_next_row()
+                layout.table_next_column()
+                layout.label(tr("training_params.use_alpha_as_mask"))
+                layout.table_next_column()
+                changed, new_val = layout.checkbox("##py_use_alpha_as_mask", params.use_alpha_as_mask)
+                if changed:
+                    params.use_alpha_as_mask = new_val
+                if layout.is_item_hovered():
+                    layout.set_tooltip(tr("training.tooltip.use_alpha_as_mask"))
+
             layout.table_next_row()
             layout.table_next_column()
             layout.label(tr("training_params.sparsity"))
@@ -281,6 +291,16 @@ class TrainingPanel(Panel):
                 params.gut = new_val
             if layout.is_item_hovered():
                 layout.set_tooltip(tr("training.tooltip.gut"))
+
+            layout.table_next_row()
+            layout.table_next_column()
+            layout.label(tr("training_params.undistort"))
+            layout.table_next_column()
+            changed, new_val = layout.checkbox("##py_undistort", params.undistort)
+            if changed:
+                params.undistort = new_val
+            if layout.is_item_hovered():
+                layout.set_tooltip(tr("training.tooltip.undistort"))
 
             layout.table_next_row()
             layout.table_next_column()

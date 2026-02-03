@@ -86,6 +86,7 @@ namespace lfs::training {
                 // Full scene data - cameras added as nodes, point cloud stored for initialization
                 scene.setInitialPointCloud(data.point_cloud);
                 scene.setSceneCenter(load_result->scene_center);
+                scene.setImagesHaveAlpha(load_result->images_have_alpha);
 
                 // Create dataset hierarchy:
                 // [Dataset] bicycle
@@ -438,6 +439,7 @@ namespace lfs::training {
             } else if constexpr (std::is_same_v<T, lfs::io::LoadedScene>) {
                 scene.setInitialPointCloud(data.point_cloud);
                 scene.setSceneCenter(load_result.scene_center);
+                scene.setImagesHaveAlpha(load_result.images_have_alpha);
 
                 std::string dataset_name = lfs::core::path_to_utf8(params.dataset.data_path.filename());
                 if (dataset_name.empty()) {

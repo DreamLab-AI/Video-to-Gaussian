@@ -106,6 +106,7 @@
     "opt.mask_mode": "Mask Mode:",
     "opt.sparsity": "Sparsity:",
     "opt.gut": "GUT:",
+    "opt.undistort": "Undistort:",
     "opt.mip_filter": "Mip Filter:",
     "opt.bg_modulation": "BG Modulation:",
     "opt.lr.position": "  Position:",
@@ -142,6 +143,7 @@
     "tooltip.penalty_power": "페널티 감소: 1=선형, 2=이차, >2=완만",
     "tooltip.mask_threshold": "임계값 이상의 값은 1.0(객체)이 됨",
     "tooltip.mask_mode": "어텐션 마스크 사용 방법: 세그먼트, 배경 무시 또는 알파 일관성",
+    "tooltip.use_alpha_as_mask": "별도의 마스크 파일 대신 RGBA 이미지의 알파 채널을 마스크 소스로 사용",
     "tooltip.mip_filter": "학습을 위한 안티앨리어싱 필터 (밉 스플래팅)",
     "tooltip.keep_model": "학습된 모델 유지, 데이터셋 폐기",
     "tooltip.strategy": "밀도화 전략 (default/mcmc)",
@@ -153,6 +155,7 @@
     "tooltip.bilateral_grid": "노출/색상 보정용 외관 임베딩",
     "tooltip.sparsity": "모델 압축을 위한 가지치기 활성화",
     "tooltip.gut": "왜곡 카메라 통합 처리",
+    "tooltip.undistort": "학습 전 이미지 왜곡 보정",
     "tooltip.bg_modulation": "별도 배경색 학습",
     "tooltip.gradient_thr": "밀도화 그래디언트 임계값",
     "tooltip.opacity_reg": "불투명도 정규화 가중치",
@@ -346,7 +349,10 @@
     "training_stopped": "학습 중지됨",
     "training_error": "학습 오류",
     "param_manager_unavailable": "파라미터 관리자를 사용할 수 없음",
-    "failed_to_load_params": "파라미터 로드 실패:"
+    "failed_to_load_params": "파라미터 로드 실패:",
+    "err_distorted_images": "왜곡된 이미지가 감지되었습니다. 왜곡이 있는 카메라로 학습하려면 --gut 또는 --undistort를 활성화하세요.",
+    "err_ortho_not_supported": "직교 카메라 모델로의 학습은 아직 지원되지 않습니다.",
+    "err_non_pinhole": "비 핀홀 카메라로 학습하려면 --gut 또는 --undistort를 활성화하세요."
   },
 
   "controls": {
@@ -665,8 +671,10 @@
     "opacity_penalty_weight": "  Opacity Penalty Weight:",
     "opacity_penalty_power": "  Opacity Penalty Power:",
     "mask_threshold": "  Mask Threshold:",
+    "use_alpha_as_mask": "Use Alpha as Mask:",
     "sparsity": "Sparsity:",
     "gut": "GUT:",
+    "undistort": "Undistort:",
     "mip_filter": "Mip 필터:",
     "bg_settings": "배경 설정",
     "bg_mode": "모드:",

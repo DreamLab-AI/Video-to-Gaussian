@@ -14,6 +14,7 @@
 #include <chrono>
 #include <filesystem>
 #include <format>
+#include "core/image_io.hpp"
 #include <system_error>
 
 namespace lfs::io {
@@ -198,6 +199,15 @@ namespace lfs::io {
 
             LOG_DEBUG("Creating {} camera objects", cameras.size());
 
+            bool images_have_alpha = false;
+            if (!cameras.empty()) {
+                try {
+                    auto [w, h, c] = lfs::core::get_image_info(cameras[0]->image_path());
+                    images_have_alpha = (c == 4);
+                } catch (const std::exception&) {
+                }
+            }
+
             if (options.progress) {
                 options.progress(60.0f, "Loading point cloud...");
             }
@@ -236,6 +246,7 @@ namespace lfs::io {
                     .cameras = std::move(cameras),
                     .point_cloud = std::move(point_cloud)},
                 .scene_center = scene_center,
+                .images_have_alpha = images_have_alpha,
                 .loader_used = name(),
                 .load_time = load_time,
                 .warnings = (has_points || has_points_text) ? std::vector<std::string>{} : std::vector<std::string>{"No sparse point cloud found - using random initialization"}};

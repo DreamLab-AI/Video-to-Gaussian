@@ -37,7 +37,7 @@ namespace lfs::core {
             size_t sh_degree_interval = 1'000;
             float means_lr = 0.000016f;
             float shs_lr = 0.0025f;
-            float opacity_lr = 0.05f;
+            float opacity_lr = 0.025f;
             float scaling_lr = 0.005f;
             float rotation_lr = 0.001f;
             float lambda_dssim = 0.2f;
@@ -71,6 +71,7 @@ namespace lfs::core {
             float mask_threshold = 0.5f;              // Threshold: >= threshold → 1.0, < threshold → keep original
             float mask_opacity_penalty_weight = 1.0f; // Opacity penalty weight for segment mode
             float mask_opacity_penalty_power = 2.0f;  // Penalty falloff (1=linear, 2=quadratic)
+            bool use_alpha_as_mask = true;            // Auto-use alpha channel from RGBA images as mask
 
             // Mip filter (anti-aliasing)
             bool mip_filter = false;
@@ -108,6 +109,7 @@ namespace lfs::core {
             size_t pause_refine_after_reset = 0;
             bool revised_opacity = false;
             bool gut = false;
+            bool undistort = false;
             float steps_scaler = 1.f; // Scales training step counts; values <= 0 disable scaling
 
             // Random initialization parameters

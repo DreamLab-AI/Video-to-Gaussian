@@ -291,9 +291,11 @@ namespace lfs::vis {
         // ========== Training Data Storage ==========
         void setInitialPointCloud(std::shared_ptr<lfs::core::PointCloud> point_cloud);
         void setSceneCenter(lfs::core::Tensor scene_center);
+        void setImagesHaveAlpha(bool have_alpha) { images_have_alpha_ = have_alpha; }
 
         [[nodiscard]] std::shared_ptr<lfs::core::PointCloud> getInitialPointCloud() const { return initial_point_cloud_; }
         [[nodiscard]] const lfs::core::Tensor& getSceneCenter() const { return scene_center_; }
+        [[nodiscard]] bool imagesHaveAlpha() const { return images_have_alpha_; }
 
         [[nodiscard]] bool hasTrainingData() const;
 
@@ -400,6 +402,7 @@ namespace lfs::vis {
         // Training data storage
         std::shared_ptr<lfs::core::PointCloud> initial_point_cloud_;
         lfs::core::Tensor scene_center_;
+        bool images_have_alpha_ = false;
         std::string training_model_node_;
 
         // Standalone appearance model (for viewing without training)

@@ -117,6 +117,9 @@ namespace lfs::python {
             .float_prop(&OptimizationParameters::mask_opacity_penalty_power,
                         "mask_opacity_penalty_power", "Penalty Power", 2.0f, 0.5f, 4.0f,
                         "Power for opacity penalty in segment mode")
+            .bool_prop(&OptimizationParameters::use_alpha_as_mask,
+                       "use_alpha_as_mask", "Use Alpha as Mask", true,
+                       "Use alpha channel from RGBA images as mask source")
 
             // Bilateral grid
             .bool_prop(&OptimizationParameters::use_bilateral_grid,
@@ -223,6 +226,10 @@ namespace lfs::python {
             .bool_prop(&OptimizationParameters::gut,
                        "gut", "GUT", false,
                        "Gaussian Unscented Transform")
+            .bool_prop(&OptimizationParameters::undistort,
+                       "undistort", "Undistort", false,
+                       "Undistort images on-the-fly before training")
+            .flags(PROP_NEEDS_RESTART)
             .enum_prop(&OptimizationParameters::bg_mode,
                        "bg_mode", "Background Mode", BackgroundMode::SolidColor,
                        {{"SolidColor", BackgroundMode::SolidColor},
@@ -1070,6 +1077,16 @@ namespace lfs::python {
                 [](PyOptimizationParams& self) { return self.params().invert_masks; },
                 [](PyOptimizationParams& self, bool v) { self.params().invert_masks = v; },
                 "Swap object and background in masks")
+            .def_prop_rw(
+                "use_alpha_as_mask",
+                [](PyOptimizationParams& self) { return self.params().use_alpha_as_mask; },
+                [](PyOptimizationParams& self, bool v) { self.params().use_alpha_as_mask = v; },
+                "Use alpha channel from RGBA images as mask source")
+            .def_prop_rw(
+                "undistort",
+                [](PyOptimizationParams& self) { return self.params().undistort; },
+                [](PyOptimizationParams& self, bool v) { self.params().undistort = v; },
+                "Undistort images on-the-fly before training")
             .def_prop_ro(
                 "save_steps",
                 [](PyOptimizationParams& self) -> std::vector<size_t> {

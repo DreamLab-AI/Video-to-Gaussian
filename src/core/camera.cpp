@@ -3,9 +3,11 @@
  * SPDX-License-Identifier: GPL-3.0-or-later */
 
 #include "core/camera.hpp"
+#include "core/cuda/undistort/undistort.hpp"
 #include "core/image_io.hpp"
 #include "core/image_loader.hpp"
 #include "core/logger.hpp"
+#include <cassert>
 #include <cuda_runtime.h>
 
 namespace lfs::core {
@@ -146,10 +148,13 @@ namespace lfs::core {
           _cam_position(std::move(other._cam_position)),
           _cached_mask(std::move(other._cached_mask)),
           _mask_loaded(other._mask_loaded),
+          _undistort_prepared(other._undistort_prepared),
+          _undistort_params(other._undistort_params),
           _stream(other._stream) {
         // Take ownership of the stream
         other._stream = nullptr;
         other._mask_loaded = false;
+        other._undistort_prepared = false;
     }
 
     Camera& Camera::operator=(Camera&& other) noexcept {
@@ -183,11 +188,14 @@ namespace lfs::core {
             _cam_position = std::move(other._cam_position);
             _cached_mask = std::move(other._cached_mask);
             _mask_loaded = other._mask_loaded;
+            _undistort_prepared = other._undistort_prepared;
+            _undistort_params = other._undistort_params;
 
             // Take ownership of the stream
             _stream = other._stream;
             other._stream = nullptr;
             other._mask_loaded = false;
+            other._undistort_prepared = false;
         }
         return *this;
     }
@@ -237,13 +245,9 @@ namespace lfs::core {
     }
 
     std::tuple<float, float, float, float> Camera::get_intrinsics() const {
-        float x_scale_factor = float(_image_width) / float(_camera_width);
-        float y_scale_factor = float(_image_height) / float(_camera_height);
-        float fx = _focal_x * x_scale_factor;
-        float fy = _focal_y * y_scale_factor;
-        float cx = _center_x * x_scale_factor;
-        float cy = _center_y * y_scale_factor;
-        return std::make_tuple(fx, fy, cx, cy);
+        const float x_scale = static_cast<float>(_image_width) / static_cast<float>(_camera_width);
+        const float y_scale = static_cast<float>(_image_height) / static_cast<float>(_camera_height);
+        return {_focal_x * x_scale, _focal_y * y_scale, _center_x * x_scale, _center_y * y_scale};
     }
 
     Tensor Camera::load_and_get_image(int resize_factor, int max_width) {
@@ -255,20 +259,12 @@ namespace lfs::core {
 
         auto image = load_image_cached(params);
 
-        // Extract dimensions from tensor shape
-        auto shape = image.shape();
-        int old_width = _image_width;
-        int old_height = _image_height;
+        const auto shape = image.shape();
         _image_width = shape[2];
         _image_height = shape[1];
 
-        LOG_DEBUG("load_and_get_image(): Tensor shape [C,H,W]=[{},{},{}], setting dimensions: {}x{} → {}x{}",
-                  shape[0], shape[1], shape[2], old_width, old_height, _image_width, _image_height);
-
-        // Transfer to CUDA if not already there (GPU decode returns tensors already on CUDA!)
         if (image.device() != Device::CUDA) {
             image = image.to(Device::CUDA, _stream);
-            // Sync stream to ensure transfer completes
             if (_stream) {
                 cudaStreamSynchronize(_stream);
             }
@@ -278,12 +274,17 @@ namespace lfs::core {
     }
 
     void Camera::load_image_size(int resize_factor, int max_width) {
-        auto result = get_image_info(_image_path);
+        int w, h;
+        if (_undistort_prepared) {
+            w = _camera_width;
+            h = _camera_height;
+        } else {
+            auto result = get_image_info(_image_path);
+            w = std::get<0>(result);
+            h = std::get<1>(result);
+        }
 
-        int w = std::get<0>(result);
-        int h = std::get<1>(result);
-
-        LOG_DEBUG("load_image_size(): Original dimensions from file: {}x{}, resize_factor={}, max_width={}",
+        LOG_DEBUG("load_image_size(): Base dimensions: {}x{}, resize_factor={}, max_width={}",
                   w, h, resize_factor, max_width);
 
         if (resize_factor > 0) {
@@ -397,6 +398,10 @@ namespace lfs::core {
             mask = ones.where(threshold_mask, mask);
         }
 
+        if (_undistort_prepared) {
+            mask = undistort_mask(mask, _undistort_params, _stream);
+        }
+
         _cached_mask = mask;
         _mask_loaded = true;
 
@@ -404,4 +409,38 @@ namespace lfs::core {
 
         return _cached_mask;
     }
+
+    void Camera::prepare_undistortion(float blank_pixels) {
+        if (_undistort_prepared)
+            return;
+        if (!has_distortion())
+            return;
+
+        _undistort_params = compute_undistort_params(
+            _focal_x, _focal_y, _center_x, _center_y,
+            _camera_width, _camera_height,
+            _radial_distortion, _tangential_distortion,
+            _camera_model_type, blank_pixels);
+
+        _focal_x = _undistort_params.dst_fx;
+        _focal_y = _undistort_params.dst_fy;
+        _center_x = _undistort_params.dst_cx;
+        _center_y = _undistort_params.dst_cy;
+        _camera_width = _undistort_params.dst_width;
+        _camera_height = _undistort_params.dst_height;
+        _FoVx = focal2fov(_focal_x, _camera_width);
+        _FoVy = focal2fov(_focal_y, _camera_height);
+        _undistort_prepared = true;
+    }
+
+    bool Camera::has_distortion() const noexcept {
+        if (_radial_distortion.is_valid() && _radial_distortion.numel() > 0)
+            return true;
+        if (_tangential_distortion.is_valid() && _tangential_distortion.numel() > 0)
+            return true;
+        if (_camera_model_type != CameraModelType::PINHOLE)
+            return true;
+        return false;
+    }
+
 } // namespace lfs::core
