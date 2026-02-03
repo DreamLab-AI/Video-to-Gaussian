@@ -728,6 +728,14 @@ install(TARGETS lfs_core
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
+install(TARGETS lfs_logger
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+)
+install(TARGETS lfs_event_bridge
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+)
 install(FILES "${CMAKE_SOURCE_DIR}/LICENSE" DESTINATION ".")
 
 set(INSTALL_RESOURCE_DIR "${CMAKE_INSTALL_DATADIR}/LichtFeld-Studio")
@@ -758,12 +766,21 @@ if(BUILD_PYTHON_BINDINGS)
 endif()
 
 if(TARGET nvimgcodec)
-    install(TARGETS nvimgcodec LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
+    install(TARGETS nvimgcodec
+        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    )
     if(TARGET nvjpeg_ext)
-        install(TARGETS nvjpeg_ext LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}/extensions")
+        install(TARGETS nvjpeg_ext
+            LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}/extensions"
+            RUNTIME DESTINATION "extensions"
+        )
     endif()
     if(TARGET nvjpeg2k_ext)
-        install(TARGETS nvjpeg2k_ext LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}/extensions")
+        install(TARGETS nvjpeg2k_ext
+            LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}/extensions"
+            RUNTIME DESTINATION "extensions"
+        )
     endif()
 endif()
 
