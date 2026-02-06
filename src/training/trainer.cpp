@@ -1114,6 +1114,15 @@ namespace lfs::training {
             RenderOutput r_output;
             int tiles_processed = 0;
 
+            // Determine controller phase before tile loop (does not depend on tile results)
+            const bool known_ppisp_camera = ppisp_ && ppisp_->is_known_camera(cam->camera_id());
+            const int ppisp_cam_idx = known_ppisp_camera ? ppisp_->camera_index(cam->camera_id()) : -1;
+            const bool in_controller_phase = ppisp_controller_pool_ && known_ppisp_camera &&
+                                             params_.optimization.ppisp_use_controller &&
+                                             iter >= params_.optimization.ppisp_controller_activation_step &&
+                                             ppisp_cam_idx >= 0 &&
+                                             ppisp_cam_idx < ppisp_controller_pool_->num_cameras();
+
             // Loop over tiles (row-major order)
             for (int tile_idx = 0; tile_idx < num_tiles; ++tile_idx) {
                 const int tile_row = tile_idx / tile_cols;
@@ -1233,110 +1242,182 @@ namespace lfs::training {
                 r_output = output; // Save last tile for densification
                 nvtxRangePop();
 
-                // Apply bilateral grid if enabled (before loss computation)
-                lfs::core::Tensor corrected_image = output.image;
-                if (bilateral_grid_ && params_.optimization.use_bilateral_grid) {
-                    nvtxRangePush("bilateral_grid_forward");
-                    corrected_image = bilateral_grid_->apply(output.image, cam->uid());
-                    nvtxRangePop();
-                }
+                if (in_controller_phase) {
+                    // Controller phase: forward through ISP with controller params, photometric loss,
+                    // backward only through controller (base params frozen)
+                    nvtxRangePush("controller_phase");
 
-                // Apply PPISP if enabled (after bilateral grid if both are enabled)
-                if (ppisp_ && params_.optimization.use_ppisp) {
-                    nvtxRangePush("ppisp_forward");
-                    corrected_image = ppisp_->apply(corrected_image, cam->camera_id(), cam->uid());
-                    nvtxRangePop();
-                }
-
-                // Compute photometric loss and gradients for this tile
-                nvtxRangePush("compute_photometric_loss");
-                lfs::core::Tensor tile_loss;
-                lfs::core::Tensor tile_grad;
-                lfs::core::Tensor tile_grad_alpha; // Gradient for alpha (from mask penalty)
-
-                const bool use_mask = params_.optimization.mask_mode != lfs::core::param::MaskMode::None &&
-                                      (cam->has_mask() || (params_.optimization.use_alpha_as_mask && scene_ && scene_->imagesHaveAlpha()));
-                if (use_mask) {
-                    // Use pipelined mask if available, otherwise load from camera (fallback for validation, etc.)
-                    lfs::core::Tensor mask;
-                    if (pipelined_mask_.is_valid() && pipelined_mask_.numel() > 0) {
-                        mask = pipelined_mask_;
-                    } else {
-                        // Fallback: load mask from camera (cached after first load)
-                        mask = cam->load_and_get_mask(
-                            params_.dataset.resize_factor,
-                            params_.dataset.max_width,
-                            params_.optimization.invert_masks,
-                            params_.optimization.mask_threshold);
-                    }
-
-                    // Extract mask tile if tiling
-                    lfs::core::Tensor mask_tile = mask;
-                    if (num_tiles > 1 && mask.ndim() == 2) {
-                        auto tile_h = mask.slice(0, tile_y_offset, tile_y_offset + tile_height);
-                        mask_tile = tile_h.slice(1, tile_x_offset, tile_x_offset + tile_width);
-                    }
-
-                    auto result = compute_photometric_loss_with_mask(
-                        corrected_image, gt_tile, mask_tile, output.alpha, params_.optimization);
-                    if (!result) {
-                        nvtxRangePop();
-                        nvtxRangePop();
-                        return std::unexpected(result.error());
-                    }
-                    tile_loss = result->loss;
-                    tile_grad = result->grad_image;
-                    tile_grad_alpha = result->grad_alpha;
-                } else {
-                    auto result = compute_photometric_loss_with_gradient(
-                        corrected_image, gt_tile, params_.optimization);
-                    if (!result) {
-                        nvtxRangePop();
-                        nvtxRangePop();
-                        return std::unexpected(result.error());
-                    }
-                    tile_loss = result->first;
-                    tile_grad = result->second;
-                }
-
-                // Accumulate tile loss (stay on GPU)
-                loss_tensor_gpu = loss_tensor_gpu + tile_loss;
-                tiles_processed++;
-                nvtxRangePop();
-
-                // Backward through PPISP (accumulates gradients, no Adam yet)
-                lfs::core::Tensor raster_grad = tile_grad;
-                if (ppisp_ && params_.optimization.use_ppisp) {
-                    nvtxRangePush("ppisp_backward");
-                    lfs::core::Tensor ppisp_input = output.image;
+                    lfs::core::Tensor corrected_image = output.image;
                     if (bilateral_grid_ && params_.optimization.use_bilateral_grid) {
-                        ppisp_input = bilateral_grid_->apply(output.image, cam->uid());
+                        corrected_image = bilateral_grid_->apply(output.image, cam->uid());
                     }
-                    raster_grad = ppisp_->backward(ppisp_input, raster_grad, cam->camera_id(), cam->uid());
-                    nvtxRangePop();
-                }
+                    auto ppisp_input = corrected_image;
 
-                // Backward through bilateral grid (accumulates gradients, no Adam yet)
-                if (bilateral_grid_ && params_.optimization.use_bilateral_grid) {
-                    nvtxRangePush("bilateral_grid_backward");
-                    raster_grad = bilateral_grid_->backward(output.image, raster_grad, cam->uid());
-                    nvtxRangePop();
-                }
+                    auto pred = ppisp_controller_pool_->predict(ppisp_cam_idx, corrected_image.unsqueeze(0), 1.0f);
+                    corrected_image = ppisp_->apply_with_controller_params(corrected_image, pred, ppisp_cam_idx);
 
-                nvtxRangePush("rasterize_backward");
-                if (gsplat_ctx) {
-                    // GUT mode: use gsplat backward (needs grad_alpha too)
-                    auto grad_alpha = tile_grad_alpha.is_valid()
-                                          ? tile_grad_alpha
-                                          : lfs::core::Tensor::zeros_like(output.alpha);
-                    gsplat_rasterize_backward(*gsplat_ctx, raster_grad, grad_alpha,
-                                              strategy_->get_model(), strategy_->get_optimizer());
+                    // Photometric loss
+                    nvtxRangePush("compute_photometric_loss");
+                    lfs::core::Tensor tile_loss;
+                    lfs::core::Tensor tile_grad;
+
+                    const bool use_mask = params_.optimization.mask_mode != lfs::core::param::MaskMode::None &&
+                                          (cam->has_mask() || (params_.optimization.use_alpha_as_mask && scene_ && scene_->imagesHaveAlpha()));
+                    if (use_mask) {
+                        lfs::core::Tensor mask;
+                        if (pipelined_mask_.is_valid() && pipelined_mask_.numel() > 0) {
+                            mask = pipelined_mask_;
+                        } else {
+                            mask = cam->load_and_get_mask(
+                                params_.dataset.resize_factor,
+                                params_.dataset.max_width,
+                                params_.optimization.invert_masks,
+                                params_.optimization.mask_threshold);
+                        }
+
+                        lfs::core::Tensor mask_tile = mask;
+                        if (num_tiles > 1 && mask.ndim() == 2) {
+                            auto tile_h = mask.slice(0, tile_y_offset, tile_y_offset + tile_height);
+                            mask_tile = tile_h.slice(1, tile_x_offset, tile_x_offset + tile_width);
+                        }
+
+                        auto result = compute_photometric_loss_with_mask(
+                            corrected_image, gt_tile, mask_tile, output.alpha, params_.optimization);
+                        if (!result) {
+                            nvtxRangePop();
+                            nvtxRangePop();
+                            nvtxRangePop();
+                            return std::unexpected(result.error());
+                        }
+                        tile_loss = result->loss;
+                        tile_grad = result->grad_image;
+                    } else {
+                        auto result = compute_photometric_loss_with_gradient(
+                            corrected_image, gt_tile, params_.optimization);
+                        if (!result) {
+                            nvtxRangePop();
+                            nvtxRangePop();
+                            nvtxRangePop();
+                            return std::unexpected(result.error());
+                        }
+                        tile_loss = result->first;
+                        tile_grad = result->second;
+                    }
+
+                    loss_tensor_gpu = loss_tensor_gpu + tile_loss;
+                    tiles_processed++;
+                    nvtxRangePop(); // compute_photometric_loss
+
+                    // ISP backward for controller params
+                    auto ctrl_grad = ppisp_->backward_with_controller_params(ppisp_input, tile_grad, pred, ppisp_cam_idx);
+                    ppisp_controller_pool_->backward(ppisp_cam_idx, ctrl_grad);
+
+                    // End arena frame explicitly (normally done inside rasterize_backward which we skip)
+                    if (fast_ctx) {
+                        auto& arena = lfs::core::GlobalArenaManager::instance().get_arena();
+                        arena.end_frame(fast_ctx->forward_ctx.frame_id);
+                    } else if (gsplat_ctx) {
+                        auto& arena = lfs::core::GlobalArenaManager::instance().get_arena();
+                        arena.end_frame(gsplat_ctx->frame_id);
+                    }
+
+                    nvtxRangePop(); // controller_phase
                 } else {
-                    // Standard mode: use fast rasterizer backward with optional alpha gradient
-                    fast_rasterize_backward(*fast_ctx, raster_grad, strategy_->get_model(),
-                                            strategy_->get_optimizer(), tile_grad_alpha);
+                    // Normal phase: full forward + backward through all components
+                    lfs::core::Tensor corrected_image = output.image;
+                    if (bilateral_grid_ && params_.optimization.use_bilateral_grid) {
+                        nvtxRangePush("bilateral_grid_forward");
+                        corrected_image = bilateral_grid_->apply(output.image, cam->uid());
+                        nvtxRangePop();
+                    }
+
+                    if (ppisp_ && params_.optimization.use_ppisp) {
+                        nvtxRangePush("ppisp_forward");
+                        corrected_image = ppisp_->apply(corrected_image, cam->camera_id(), cam->uid());
+                        nvtxRangePop();
+                    }
+
+                    nvtxRangePush("compute_photometric_loss");
+                    lfs::core::Tensor tile_loss;
+                    lfs::core::Tensor tile_grad;
+                    lfs::core::Tensor tile_grad_alpha;
+
+                    const bool use_mask = params_.optimization.mask_mode != lfs::core::param::MaskMode::None &&
+                                          (cam->has_mask() || (params_.optimization.use_alpha_as_mask && scene_ && scene_->imagesHaveAlpha()));
+                    if (use_mask) {
+                        lfs::core::Tensor mask;
+                        if (pipelined_mask_.is_valid() && pipelined_mask_.numel() > 0) {
+                            mask = pipelined_mask_;
+                        } else {
+                            mask = cam->load_and_get_mask(
+                                params_.dataset.resize_factor,
+                                params_.dataset.max_width,
+                                params_.optimization.invert_masks,
+                                params_.optimization.mask_threshold);
+                        }
+
+                        lfs::core::Tensor mask_tile = mask;
+                        if (num_tiles > 1 && mask.ndim() == 2) {
+                            auto tile_h = mask.slice(0, tile_y_offset, tile_y_offset + tile_height);
+                            mask_tile = tile_h.slice(1, tile_x_offset, tile_x_offset + tile_width);
+                        }
+
+                        auto result = compute_photometric_loss_with_mask(
+                            corrected_image, gt_tile, mask_tile, output.alpha, params_.optimization);
+                        if (!result) {
+                            nvtxRangePop();
+                            nvtxRangePop();
+                            return std::unexpected(result.error());
+                        }
+                        tile_loss = result->loss;
+                        tile_grad = result->grad_image;
+                        tile_grad_alpha = result->grad_alpha;
+                    } else {
+                        auto result = compute_photometric_loss_with_gradient(
+                            corrected_image, gt_tile, params_.optimization);
+                        if (!result) {
+                            nvtxRangePop();
+                            nvtxRangePop();
+                            return std::unexpected(result.error());
+                        }
+                        tile_loss = result->first;
+                        tile_grad = result->second;
+                    }
+
+                    loss_tensor_gpu = loss_tensor_gpu + tile_loss;
+                    tiles_processed++;
+                    nvtxRangePop();
+
+                    lfs::core::Tensor raster_grad = tile_grad;
+                    if (ppisp_ && params_.optimization.use_ppisp) {
+                        nvtxRangePush("ppisp_backward");
+                        lfs::core::Tensor ppisp_input = output.image;
+                        if (bilateral_grid_ && params_.optimization.use_bilateral_grid) {
+                            ppisp_input = bilateral_grid_->apply(output.image, cam->uid());
+                        }
+                        raster_grad = ppisp_->backward(ppisp_input, raster_grad, cam->camera_id(), cam->uid());
+                        nvtxRangePop();
+                    }
+
+                    if (bilateral_grid_ && params_.optimization.use_bilateral_grid) {
+                        nvtxRangePush("bilateral_grid_backward");
+                        raster_grad = bilateral_grid_->backward(output.image, raster_grad, cam->uid());
+                        nvtxRangePop();
+                    }
+
+                    nvtxRangePush("rasterize_backward");
+                    if (gsplat_ctx) {
+                        auto grad_alpha = tile_grad_alpha.is_valid()
+                                              ? tile_grad_alpha
+                                              : lfs::core::Tensor::zeros_like(output.alpha);
+                        gsplat_rasterize_backward(*gsplat_ctx, raster_grad, grad_alpha,
+                                                  strategy_->get_model(), strategy_->get_optimizer());
+                    } else {
+                        fast_rasterize_backward(*fast_ctx, raster_grad, strategy_->get_model(),
+                                                strategy_->get_optimizer(), tile_grad_alpha);
+                    }
+                    nvtxRangePop();
                 }
-                nvtxRangePop();
 
                 nvtxRangePop(); // End tile
             }
@@ -1351,79 +1432,60 @@ namespace lfs::training {
                            : StepResult::Stop;
             }
 
-            // Regularization losses are computed ONCE on full model (after all tiles)
-            // They accumulate gradients on top of the per-tile gradients
-
-            // Scale regularization loss - accumulate on GPU (AFTER rasterizer backward)
-            if (params_.optimization.scale_reg > 0.0f) {
-                nvtxRangePush("compute_scale_reg_loss");
-                auto scale_loss_result = compute_scale_reg_loss(strategy_->get_model(), strategy_->get_optimizer(), params_.optimization);
-                if (!scale_loss_result) {
-                    return std::unexpected(scale_loss_result.error());
-                }
-                loss_tensor_gpu = loss_tensor_gpu + *scale_loss_result;
-                nvtxRangePop();
-            }
-
-            // Opacity regularization loss - accumulate on GPU (AFTER rasterizer backward)
-            if (params_.optimization.opacity_reg > 0.0f) {
-                nvtxRangePush("compute_opacity_reg_loss");
-                auto opacity_loss_result = compute_opacity_reg_loss(strategy_->get_model(), strategy_->get_optimizer(), params_.optimization);
-                if (!opacity_loss_result) {
-                    return std::unexpected(opacity_loss_result.error());
-                }
-                loss_tensor_gpu = loss_tensor_gpu + *opacity_loss_result;
-                nvtxRangePop();
-            }
-
-            // Bilateral grid: TV loss + optimizer step
-            if (bilateral_grid_ && params_.optimization.use_bilateral_grid) {
-                nvtxRangePush("bilateral_grid_tv_and_step");
-                const float tv_weight = params_.optimization.tv_loss_weight;
-
-                loss_tensor_gpu = loss_tensor_gpu + bilateral_grid_->tv_loss_gpu() * tv_weight;
-                bilateral_grid_->tv_backward(tv_weight);
-                bilateral_grid_->optimizer_step();
-                bilateral_grid_->zero_grad();
-                bilateral_grid_->scheduler_step();
-
-                nvtxRangePop();
-            }
-
-            // PPISP: regularization loss + optimizer step
-            if (ppisp_ && params_.optimization.use_ppisp) {
-                nvtxRangePush("ppisp_reg_and_step");
-
-                // Individual reg weights are applied inside reg_loss_gpu()
-                loss_tensor_gpu = loss_tensor_gpu + ppisp_->reg_loss_gpu();
-                ppisp_->reg_backward();
-                ppisp_->optimizer_step();
-                ppisp_->zero_grad();
-                ppisp_->scheduler_step();
-
-                nvtxRangePop();
-            }
-
-            // PPISP controller distillation
-            const bool known_ppisp_camera = ppisp_ && ppisp_->is_known_camera(cam->camera_id());
-            const int ppisp_cam_idx = known_ppisp_camera ? ppisp_->camera_index(cam->camera_id()) : -1;
-            const bool in_controller_phase = ppisp_controller_pool_ && known_ppisp_camera &&
-                                             params_.optimization.ppisp_use_controller &&
-                                             iter >= params_.optimization.ppisp_controller_activation_step &&
-                                             ppisp_cam_idx >= 0 &&
-                                             ppisp_cam_idx < ppisp_controller_pool_->num_cameras();
             if (in_controller_phase) {
-                nvtxRangePush("ppisp_controller_distillation");
-
-                auto pred = ppisp_controller_pool_->predict(ppisp_cam_idx, r_output.image.unsqueeze(0), 1.0f);
-                auto target = ppisp_->get_params_for_frame(cam->uid());
-                ppisp_controller_pool_->compute_mse_gradient(pred, target);
-                ppisp_controller_pool_->backward(ppisp_cam_idx, ppisp_controller_pool_->get_mse_gradient());
+                // Controller phase: only update controller weights
+                nvtxRangePush("controller_optimizer_step");
                 ppisp_controller_pool_->optimizer_step(ppisp_cam_idx);
                 ppisp_controller_pool_->zero_grad();
                 ppisp_controller_pool_->scheduler_step(ppisp_cam_idx);
-
                 nvtxRangePop();
+            } else {
+                // Normal phase: regularization losses + optimizer steps for all components
+
+                if (params_.optimization.scale_reg > 0.0f) {
+                    nvtxRangePush("compute_scale_reg_loss");
+                    auto scale_loss_result = compute_scale_reg_loss(strategy_->get_model(), strategy_->get_optimizer(), params_.optimization);
+                    if (!scale_loss_result) {
+                        return std::unexpected(scale_loss_result.error());
+                    }
+                    loss_tensor_gpu = loss_tensor_gpu + *scale_loss_result;
+                    nvtxRangePop();
+                }
+
+                if (params_.optimization.opacity_reg > 0.0f) {
+                    nvtxRangePush("compute_opacity_reg_loss");
+                    auto opacity_loss_result = compute_opacity_reg_loss(strategy_->get_model(), strategy_->get_optimizer(), params_.optimization);
+                    if (!opacity_loss_result) {
+                        return std::unexpected(opacity_loss_result.error());
+                    }
+                    loss_tensor_gpu = loss_tensor_gpu + *opacity_loss_result;
+                    nvtxRangePop();
+                }
+
+                if (bilateral_grid_ && params_.optimization.use_bilateral_grid) {
+                    nvtxRangePush("bilateral_grid_tv_and_step");
+                    const float tv_weight = params_.optimization.tv_loss_weight;
+
+                    loss_tensor_gpu = loss_tensor_gpu + bilateral_grid_->tv_loss_gpu() * tv_weight;
+                    bilateral_grid_->tv_backward(tv_weight);
+                    bilateral_grid_->optimizer_step();
+                    bilateral_grid_->zero_grad();
+                    bilateral_grid_->scheduler_step();
+
+                    nvtxRangePop();
+                }
+
+                if (ppisp_ && params_.optimization.use_ppisp) {
+                    nvtxRangePush("ppisp_reg_and_step");
+
+                    loss_tensor_gpu = loss_tensor_gpu + ppisp_->reg_loss_gpu();
+                    ppisp_->reg_backward();
+                    ppisp_->optimizer_step();
+                    ppisp_->zero_grad();
+                    ppisp_->scheduler_step();
+
+                    nvtxRangePop();
+                }
             }
 
             // Sparsity loss - ALL ON GPU, no CPU sync here
