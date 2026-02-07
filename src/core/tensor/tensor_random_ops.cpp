@@ -130,10 +130,30 @@ namespace lfs::core {
         size_t n = numel();
 
         if (device_ == Device::CUDA) {
-            // Use kernel-based generation with advancing seed
-            uint64_t seed = RandomGenerator::instance().get_next_cuda_seed();
-            tensor_ops::launch_uniform(ptr<float>(), n, low, high, seed, stream_);
-            // No sync - in-place operation returns *this
+            const cudaStream_t active_stream = resolveCUDAStream(stream_);
+            CHECK_CUDA(waitForCUDAStream(active_stream, stream_));
+            stream_ = active_stream;
+
+            curandGenerator_t* gen = static_cast<curandGenerator_t*>(
+                RandomGenerator::instance().get_generator(Device::CUDA));
+
+            uint64_t offset = RandomGenerator::instance().get_next_cuda_offset();
+            CHECK_CURAND(curandSetGeneratorOffset(*gen, offset));
+            CHECK_CURAND(curandSetStream(*gen, active_stream));
+            CHECK_CURAND(curandGenerateUniform(*gen, ptr<float>(), n));
+
+            // Scale from (0,1] to [low,high)
+            if (low != 0.0f || high != 1.0f) {
+                const float range = high - low;
+                tensor_ops::launch_scalar_op_generic(
+                    ptr<float>(), range, ptr<float>(), n,
+                    ops::mul_op{}, active_stream);
+                if (low != 0.0f) {
+                    tensor_ops::launch_scalar_op_generic(
+                        ptr<float>(), low, ptr<float>(), n,
+                        ops::add_op{}, active_stream);
+                }
+            }
         } else {
             // CPU uses stateful generator
             auto* impl = static_cast<RandomGeneratorImpl*>(
@@ -162,23 +182,22 @@ namespace lfs::core {
         size_t n = numel();
 
         if (device_ == Device::CUDA) {
-            // OPTIMIZATION: Use curandGenerateNormal for bulk generation (much faster!)
-            // This avoids the slow per-element curand_init in the kernel
+            const cudaStream_t active_stream = resolveCUDAStream(stream_);
+            CHECK_CUDA(waitForCUDAStream(active_stream, stream_));
+            stream_ = active_stream;
+
             curandGenerator_t* gen = static_cast<curandGenerator_t*>(
                 RandomGenerator::instance().get_generator(Device::CUDA));
 
-            // Advance the generator offset (not the seed!) for reproducibility
             uint64_t offset = RandomGenerator::instance().get_next_cuda_offset();
             CHECK_CURAND(curandSetGeneratorOffset(*gen, offset));
+            CHECK_CURAND(curandSetStream(*gen, active_stream));
 
-            // curandGenerateNormal requires even number of elements
             if (n % 2 == 1) {
-                // For odd sizes, generate n+1 and ignore the last element
                 CHECK_CURAND(curandGenerateNormal(*gen, ptr<float>(), n + 1, mean, std));
             } else {
                 CHECK_CURAND(curandGenerateNormal(*gen, ptr<float>(), n, mean, std));
             }
-            // Note: No need for cudaDeviceSynchronize() - curandGenerateNormal is blocking
         } else {
             // CPU uses stateful generator
             auto* impl = static_cast<RandomGeneratorImpl*>(

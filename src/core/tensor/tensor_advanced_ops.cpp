@@ -2,6 +2,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later */
 
 #include "core/logger.hpp"
+#include "internal/cuda_stream_context.hpp"
 #include "internal/tensor_impl.hpp"
 #include "internal/tensor_ops.hpp"
 #include <algorithm>
@@ -46,8 +47,11 @@ namespace lfs::core {
         auto result = empty({N, M}, device_, dtype_);
 
         if (device_ == Device::CUDA) {
+            const cudaStream_t active_stream = resolveCUDAStream(result.stream());
+            CHECK_CUDA(waitForCUDAStream(active_stream, stream_));
+            CHECK_CUDA(waitForCUDAStream(active_stream, other_same_device.stream()));
             tensor_ops::launch_cdist(ptr<float>(), other_same_device.ptr<float>(),
-                                     result.ptr<float>(), N, M, D, p, 0);
+                                     result.ptr<float>(), N, M, D, p, active_stream);
             // No sync - returns tensor
         } else {
             const float* a_data = ptr<float>();
@@ -513,9 +517,11 @@ namespace lfs::core {
         // 1D case - optimized path
         if (ndim() == 1 && dim == 0) {
             if (device_ == Device::CUDA) {
+                const cudaStream_t active_stream = resolveCUDAStream(sorted.stream());
+                CHECK_CUDA(waitForCUDAStream(active_stream, stream_));
                 tensor_ops::launch_sort_1d(sorted.ptr<float>(),
                                            reinterpret_cast<int64_t*>(indices.data_ptr()),
-                                           numel(), descending, 0);
+                                           numel(), descending, active_stream);
                 // No sync - returns tensors
             } else {
                 // CPU fallback
@@ -556,10 +562,12 @@ namespace lfs::core {
         }
 
         if (device_ == Device::CUDA) {
+            const cudaStream_t active_stream = resolveCUDAStream(sorted.stream());
+            CHECK_CUDA(waitForCUDAStream(active_stream, stream_));
             tensor_ops::launch_sort_2d(sorted.ptr<float>(),
                                        reinterpret_cast<int64_t*>(indices.data_ptr()),
                                        outer_size, dim_size, inner_size,
-                                       dim, descending, 0);
+                                       dim, descending, active_stream);
             // No sync - returns tensors
         } else {
             // CPU implementation

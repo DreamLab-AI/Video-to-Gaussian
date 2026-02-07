@@ -3,9 +3,17 @@
 
 #include "core/logger.hpp"
 #include "core/tensor_trace.hpp"
+#include "internal/cuda_stream_context.hpp"
 #include "internal/tensor_impl.hpp"
 #include "internal/tensor_ops.hpp"
 #include <cassert>
+
+#define CHECK_CUDA(call)                                        \
+    do {                                                        \
+        if (auto e = call; e != cudaSuccess) {                  \
+            LOG_ERROR("CUDA error: {}", cudaGetErrorString(e)); \
+        }                                                       \
+    } while (0)
 
 namespace lfs::core {
 
@@ -60,8 +68,11 @@ namespace lfs::core {
         // GPU: use tiled CUDA sgemm kernel
         if (device_ == Device::CUDA) {
             auto result = empty({m, n}, Device::CUDA, dtype_);
+            const cudaStream_t active_stream = resolveCUDAStream(result.stream());
+            CHECK_CUDA(waitForCUDAStream(active_stream, a.stream()));
+            CHECK_CUDA(waitForCUDAStream(active_stream, b.stream()));
             tensor_ops::launch_sgemm(a.ptr<float>(), b.ptr<float>(), result.ptr<float>(),
-                                     m, n, k, nullptr);
+                                     m, n, k, active_stream);
             return result;
         }
 
@@ -108,8 +119,11 @@ namespace lfs::core {
         // GPU: use tiled CUDA batched sgemm kernel
         if (device_ == Device::CUDA) {
             auto result = empty({batch_size, m, n}, Device::CUDA, dtype_);
+            const cudaStream_t active_stream = resolveCUDAStream(result.stream());
+            CHECK_CUDA(waitForCUDAStream(active_stream, a.stream()));
+            CHECK_CUDA(waitForCUDAStream(active_stream, b.stream()));
             tensor_ops::launch_sgemm_batched(a.ptr<float>(), b.ptr<float>(), result.ptr<float>(),
-                                             batch_size, m, n, k, nullptr);
+                                             batch_size, m, n, k, active_stream);
             return result;
         }
 

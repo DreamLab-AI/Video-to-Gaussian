@@ -32,6 +32,7 @@ set(TENSOR_SOURCES
         tensor/tensor_advanced_ops.cpp
         tensor/tensor_row_proxy.cpp
         tensor/tensor_nn_ops.cpp
+        tensor/cuda_stream_context.cpp
         tensor/pinned_memory_allocator.cpp
         tensor/offset_allocator.cpp
         tensor/tensor_exports.cu

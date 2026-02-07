@@ -25,6 +25,7 @@
 
 #include "tensor_functors.hpp"
 #include "tensor_ops.hpp"
+#include "cuda_stream_context.hpp"
 
 #include "core/export.hpp"
 
@@ -339,6 +340,18 @@ namespace lfs::core {
             }
 
             auto result = Tensor::empty(broadcast_shape, device_, out_dtype);
+            const cudaStream_t active_stream = (device_ == Device::CUDA) ? resolveCUDAStream(result.stream()) : nullptr;
+
+            if (device_ == Device::CUDA) {
+                if (auto err = waitForCUDAStream(active_stream, stream_); err != cudaSuccess) {
+                    throw std::runtime_error(
+                        std::string("binary_op_generic: stream wait failed for lhs: ") + cudaGetErrorString(err));
+                }
+                if (auto err = waitForCUDAStream(active_stream, other.stream()); err != cudaSuccess) {
+                    throw std::runtime_error(
+                        std::string("binary_op_generic: stream wait failed for rhs: ") + cudaGetErrorString(err));
+                }
+            }
 
             bool a_needs_broadcast = (shape_ != broadcast_shape);
             bool b_needs_broadcast = (other.shape() != broadcast_shape);
@@ -348,7 +361,7 @@ namespace lfs::core {
                 if (device_ == Device::CUDA) {
                     tensor_ops::launch_binary_op_generic(
                         ptr<SrcT>(), other.ptr<SrcT>(), result.ptr<OutT>(),
-                        result.numel(), op, result.stream());
+                        result.numel(), op, active_stream);
                     // No sync - tensor operation
                 } else {
                     apply_binary_cpu(ptr<SrcT>(), other.ptr<SrcT>(), result.ptr<OutT>(),
@@ -365,7 +378,7 @@ namespace lfs::core {
                         ptr<SrcT>(), other.ptr<SrcT>(), result.ptr<OutT>(),
                         a_shape.data(), b_shape.data(), c_shape.data(),
                         a_shape.size(), b_shape.size(), c_shape.size(),
-                        result.numel(), op, result.stream());
+                        result.numel(), op, active_stream);
                     // No sync - tensor operation
                 } else {
                     // CPU broadcasting: materialize broadcasts first
@@ -385,29 +398,34 @@ namespace lfs::core {
             validate_unary_op();
 
             auto result = Tensor::empty(shape_, device_, out_dtype);
+            const cudaStream_t active_stream = (device_ == Device::CUDA) ? resolveCUDAStream(result.stream()) : nullptr;
 
             if (device_ == Device::CUDA) {
+                if (auto err = waitForCUDAStream(active_stream, stream_); err != cudaSuccess) {
+                    throw std::runtime_error(
+                        std::string("scalar_op_generic: stream wait failed: ") + cudaGetErrorString(err));
+                }
                 // Handle different input tensor dtypes
                 if (dtype_ == DataType::Int32) {
                     int scalar_int = static_cast<int>(scalar);
                     if (out_dtype == DataType::Bool) {
                         tensor_ops::launch_scalar_op_generic(
                             ptr<int>(), scalar_int, result.ptr<unsigned char>(),
-                            numel(), op, nullptr);
+                            numel(), op, active_stream);
                     } else if (out_dtype == DataType::Int32) {
                         tensor_ops::launch_scalar_op_generic(
                             ptr<int>(), scalar_int, result.ptr<int>(),
-                            numel(), op, nullptr);
+                            numel(), op, active_stream);
                     }
                 } else { // Float32
                     if (out_dtype == DataType::Bool) {
                         tensor_ops::launch_scalar_op_generic(
                             ptr<float>(), scalar, result.ptr<unsigned char>(),
-                            numel(), op, nullptr);
+                            numel(), op, active_stream);
                     } else {
                         tensor_ops::launch_scalar_op_generic(
                             ptr<float>(), scalar, result.ptr<float>(),
-                            numel(), op, nullptr);
+                            numel(), op, active_stream);
                     }
                 }
                 // No sync needed - operations are async
@@ -450,9 +468,15 @@ namespace lfs::core {
             validate_unary_op();
 
             if (device_ == Device::CUDA) {
+                const cudaStream_t active_stream = resolveCUDAStream(stream_);
+                if (auto err = waitForCUDAStream(active_stream, stream_); err != cudaSuccess) {
+                    throw std::runtime_error(
+                        std::string("scalar_op_inplace_generic: stream wait failed: ") + cudaGetErrorString(err));
+                }
                 tensor_ops::launch_scalar_op_generic(
                     ptr<float>(), scalar, ptr<float>(),
-                    numel(), op, nullptr);
+                    numel(), op, active_stream);
+                stream_ = active_stream;
                 // No sync - tensor operation
             } else {
                 // CPU implementation
@@ -485,9 +509,19 @@ namespace lfs::core {
             }
 
             if (device_ == Device::CUDA) {
+                const cudaStream_t active_stream = resolveCUDAStream(stream_);
+                if (auto err = waitForCUDAStream(active_stream, stream_); err != cudaSuccess) {
+                    throw std::runtime_error(
+                        std::string("binary_op_inplace_generic: stream wait failed for lhs: ") + cudaGetErrorString(err));
+                }
+                if (auto err = waitForCUDAStream(active_stream, other.stream()); err != cudaSuccess) {
+                    throw std::runtime_error(
+                        std::string("binary_op_inplace_generic: stream wait failed for rhs: ") + cudaGetErrorString(err));
+                }
                 tensor_ops::launch_binary_op_generic(
                     ptr<SrcT>(), other.ptr<SrcT>(), ptr<SrcT>(),
-                    numel(), op, nullptr);
+                    numel(), op, active_stream);
+                stream_ = active_stream;
                 // No sync - tensor operation
             } else {
                 // CPU implementation
@@ -1370,7 +1404,7 @@ namespace lfs::core {
         // Scalar reduce operations - use direct CUB path for CUDA Float32 contiguous tensors
         float sum_scalar() const {
             if (device_ == Device::CUDA && dtype_ == DataType::Float32 && is_contiguous_) {
-                return tensor_ops::direct_sum_scalar(ptr<float>(), numel(), nullptr);
+                return tensor_ops::direct_sum_scalar(ptr<float>(), numel(), stream_);
             }
             auto result = sum();
             if (dtype_ == DataType::Bool) {
@@ -1381,21 +1415,21 @@ namespace lfs::core {
 
         float mean_scalar() const {
             if (device_ == Device::CUDA && dtype_ == DataType::Float32 && is_contiguous_) {
-                return tensor_ops::direct_mean_scalar(ptr<float>(), numel(), nullptr);
+                return tensor_ops::direct_mean_scalar(ptr<float>(), numel(), stream_);
             }
             return mean().item();
         }
 
         float min_scalar() const {
             if (device_ == Device::CUDA && dtype_ == DataType::Float32 && is_contiguous_) {
-                return tensor_ops::direct_min_scalar(ptr<float>(), numel(), nullptr);
+                return tensor_ops::direct_min_scalar(ptr<float>(), numel(), stream_);
             }
             return min().item();
         }
 
         float max_scalar() const {
             if (device_ == Device::CUDA && dtype_ == DataType::Float32 && is_contiguous_) {
-                return tensor_ops::direct_max_scalar(ptr<float>(), numel(), nullptr);
+                return tensor_ops::direct_max_scalar(ptr<float>(), numel(), stream_);
             }
             return max().item();
         }
@@ -1455,7 +1489,17 @@ namespace lfs::core {
             const char* data_ptr = static_cast<const char*>(data_) + storage_offset_ * dtype_size(dtype_);
 
             if (device_ == Device::CUDA) {
-                cudaMemcpy(&value, data_ptr, sizeof(T), cudaMemcpyDeviceToHost);
+                const cudaStream_t active_stream = resolveCUDAStream(stream_);
+                cudaError_t err = cudaMemcpyAsync(&value, data_ptr, sizeof(T), cudaMemcpyDeviceToHost, active_stream);
+                if (err != cudaSuccess) {
+                    throw std::runtime_error(
+                        std::string("item<T>(): cudaMemcpyAsync failed: ") + cudaGetErrorString(err));
+                }
+                err = synchronizeCUDAStream(active_stream);
+                if (err != cudaSuccess) {
+                    throw std::runtime_error(
+                        std::string("item<T>(): stream synchronize failed: ") + cudaGetErrorString(err));
+                }
             } else {
                 value = *static_cast<const T*>(static_cast<const void*>(data_ptr));
             }
@@ -1860,7 +1904,11 @@ namespace lfs::core {
                 T value{};
                 size_t type_size = dtype_size(tensor_->dtype());
                 const void* src_ptr = static_cast<const char*>(tensor_->data_ptr()) + row_index_ * type_size;
-                cudaError_t err = cudaMemcpy(&value, src_ptr, sizeof(T), cudaMemcpyDeviceToHost);
+                const cudaStream_t active_stream = resolveCUDAStream(tensor_->stream());
+                cudaError_t err = cudaMemcpyAsync(&value, src_ptr, sizeof(T), cudaMemcpyDeviceToHost, active_stream);
+                if (err == cudaSuccess) {
+                    err = synchronizeCUDAStream(active_stream);
+                }
                 if (err != cudaSuccess) {
                     throw std::runtime_error(
                         std::string("CUDA memcpy failed in TensorRowProxy::item_as(): ") + cudaGetErrorString(err));

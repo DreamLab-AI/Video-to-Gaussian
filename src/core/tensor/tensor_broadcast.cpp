@@ -3,6 +3,7 @@
 
 #include "internal/tensor_broadcast.hpp"
 #include "core/logger.hpp"
+#include "internal/cuda_stream_context.hpp"
 #include "internal/tensor_impl.hpp"
 #include "internal/tensor_ops.hpp"
 
@@ -44,6 +45,11 @@ namespace lfs::core {
         auto result = Tensor::empty(target, src.device(), src.dtype());
 
         if (src.device() == Device::CUDA) {
+            const cudaStream_t active_stream = resolveCUDAStream(result.stream());
+            if (auto err = waitForCUDAStream(active_stream, src.stream()); err != cudaSuccess) {
+                LOG_ERROR("broadcast_to: stream wait failed: {}", cudaGetErrorString(err));
+                return Tensor();
+            }
             const auto& src_strides = src.strides();
             const bool strided = !src.is_contiguous();
 
@@ -52,24 +58,24 @@ namespace lfs::core {
                     tensor_ops::launch_broadcast_strided_bool(
                         src.ptr<unsigned char>(), result.ptr<unsigned char>(),
                         src_dims.data(), src_strides.data(), target_dims.data(),
-                        src_dims.size(), target_dims.size(), result.numel(), 0);
+                        src_dims.size(), target_dims.size(), result.numel(), active_stream);
                 } else {
                     tensor_ops::launch_broadcast_bool(
                         src.ptr<unsigned char>(), result.ptr<unsigned char>(),
                         src_dims.data(), target_dims.data(),
-                        src_dims.size(), target_dims.size(), result.numel(), 0);
+                        src_dims.size(), target_dims.size(), result.numel(), active_stream);
                 }
             } else if (src.dtype() == DataType::Float32) {
                 if (strided) {
                     tensor_ops::launch_broadcast_strided(
                         src.ptr<float>(), result.ptr<float>(),
                         src_dims.data(), src_strides.data(), target_dims.data(),
-                        src_dims.size(), target_dims.size(), result.numel(), 0);
+                        src_dims.size(), target_dims.size(), result.numel(), active_stream);
                 } else {
                     tensor_ops::launch_broadcast(
                         src.ptr<float>(), result.ptr<float>(),
                         src_dims.data(), target_dims.data(),
-                        src_dims.size(), target_dims.size(), result.numel(), 0);
+                        src_dims.size(), target_dims.size(), result.numel(), active_stream);
                 }
             } else {
                 LOG_ERROR("Unsupported dtype for CUDA broadcast: {}", dtype_name(src.dtype()));

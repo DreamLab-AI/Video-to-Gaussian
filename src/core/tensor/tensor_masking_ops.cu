@@ -2,6 +2,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later */
 
 #include "internal/cuda_memory_guard.hpp"
+#include "internal/cuda_stream_context.hpp"
 #include "internal/tensor_functors.hpp"
 #include "internal/tensor_ops.hpp"
 #include <cfloat>
@@ -452,9 +453,8 @@ namespace lfs::core::tensor_ops {
                                          data_ptr, data_ptr + n,
                                          ops::is_nonzero_bool_op());
 
-        // Write to device memory (use sync copy since result is stack variable)
-        // OPTIMIZATION: cudaMemcpy (blocking) is more efficient than cudaMemcpyAsync + cudaStreamSynchronize
-        cudaMemcpy(count, &result, sizeof(size_t), cudaMemcpyHostToDevice);
+        // Use stream-ordered copy to avoid default-stream races.
+        cudaMemcpyAsync(count, &result, sizeof(size_t), cudaMemcpyHostToDevice, stream);
     }
 
     void launch_count_nonzero_float(const float* data, size_t* count, size_t n, cudaStream_t stream) {
@@ -470,10 +470,8 @@ namespace lfs::core::tensor_ops {
                                          data_ptr, data_ptr + n,
                                          ops::is_nonzero_op<float>());
 
-        // Then write to device memory
-        // Write to device memory (use sync copy since result is stack variable)
-        // OPTIMIZATION: cudaMemcpy (blocking) is more efficient than cudaMemcpyAsync + cudaStreamSynchronize
-        cudaMemcpy(count, &result, sizeof(size_t), cudaMemcpyHostToDevice);
+        // Use stream-ordered copy to avoid default-stream races.
+        cudaMemcpyAsync(count, &result, sizeof(size_t), cudaMemcpyHostToDevice, stream);
     }
 
     // ============= Index Operations =============

@@ -101,7 +101,12 @@ namespace lfs::core::tensor_ops {
                 return 0.0f;
             size_t temp_bytes = temp_capacity_;
             cub::DeviceReduce::Sum(temp_storage_, temp_bytes, data, d_scalar_, n, stream);
-            cudaMemcpy(h_scalar_, d_scalar_, sizeof(float), cudaMemcpyDeviceToHost);
+            if (stream) {
+                CHECK_CUDA(cudaMemcpyAsync(h_scalar_, d_scalar_, sizeof(float), cudaMemcpyDeviceToHost, stream));
+                CHECK_CUDA(cudaStreamSynchronize(stream));
+            } else {
+                CHECK_CUDA(cudaMemcpy(h_scalar_, d_scalar_, sizeof(float), cudaMemcpyDeviceToHost));
+            }
             return *h_scalar_;
         }
 
@@ -114,7 +119,12 @@ namespace lfs::core::tensor_ops {
                 return -std::numeric_limits<float>::infinity();
             size_t temp_bytes = temp_capacity_;
             cub::DeviceReduce::Max(temp_storage_, temp_bytes, data, d_scalar_, n, stream);
-            cudaMemcpy(h_scalar_, d_scalar_, sizeof(float), cudaMemcpyDeviceToHost);
+            if (stream) {
+                CHECK_CUDA(cudaMemcpyAsync(h_scalar_, d_scalar_, sizeof(float), cudaMemcpyDeviceToHost, stream));
+                CHECK_CUDA(cudaStreamSynchronize(stream));
+            } else {
+                CHECK_CUDA(cudaMemcpy(h_scalar_, d_scalar_, sizeof(float), cudaMemcpyDeviceToHost));
+            }
             return *h_scalar_;
         }
 
@@ -123,7 +133,12 @@ namespace lfs::core::tensor_ops {
                 return std::numeric_limits<float>::infinity();
             size_t temp_bytes = temp_capacity_;
             cub::DeviceReduce::Min(temp_storage_, temp_bytes, data, d_scalar_, n, stream);
-            cudaMemcpy(h_scalar_, d_scalar_, sizeof(float), cudaMemcpyDeviceToHost);
+            if (stream) {
+                CHECK_CUDA(cudaMemcpyAsync(h_scalar_, d_scalar_, sizeof(float), cudaMemcpyDeviceToHost, stream));
+                CHECK_CUDA(cudaStreamSynchronize(stream));
+            } else {
+                CHECK_CUDA(cudaMemcpy(h_scalar_, d_scalar_, sizeof(float), cudaMemcpyDeviceToHost));
+            }
             return *h_scalar_;
         }
 
@@ -2828,10 +2843,15 @@ namespace lfs::core::tensor_ops {
         // Copy shape and strides to device
         size_t* d_shape;
         size_t* d_strides;
+#if CUDART_VERSION >= 12080
+        CHECK_CUDA(cudaMallocAsync(&d_shape, ndim * sizeof(size_t), stream));
+        CHECK_CUDA(cudaMallocAsync(&d_strides, ndim * sizeof(size_t), stream));
+#else
         CHECK_CUDA(cudaMalloc(&d_shape, ndim * sizeof(size_t)));
         CHECK_CUDA(cudaMalloc(&d_strides, ndim * sizeof(size_t)));
-        CHECK_CUDA(cudaMemcpy(d_shape, shape.data(), ndim * sizeof(size_t), cudaMemcpyHostToDevice));
-        CHECK_CUDA(cudaMemcpy(d_strides, strides.data(), ndim * sizeof(size_t), cudaMemcpyHostToDevice));
+#endif
+        CHECK_CUDA(cudaMemcpyAsync(d_shape, shape.data(), ndim * sizeof(size_t), cudaMemcpyHostToDevice, stream));
+        CHECK_CUDA(cudaMemcpyAsync(d_strides, strides.data(), ndim * sizeof(size_t), cudaMemcpyHostToDevice, stream));
 
         // Use 2D grid for large arrays to avoid exceeding grid dimension limits
         if (num_blocks <= max_blocks_x) {
@@ -2845,13 +2865,16 @@ namespace lfs::core::tensor_ops {
         }
 
         CHECK_CUDA(cudaGetLastError());
-        if (stream == nullptr) {
-            CHECK_CUDA(cudaDeviceSynchronize());
-        }
 
         // Clean up device memory
+#if CUDART_VERSION >= 12080
+        CHECK_CUDA(cudaFreeAsync(d_shape, stream));
+        CHECK_CUDA(cudaFreeAsync(d_strides, stream));
+#else
+        CHECK_CUDA(synchronizeCUDAStream(stream));
         CHECK_CUDA(cudaFree(d_shape));
         CHECK_CUDA(cudaFree(d_strides));
+#endif
     }
 
     // Explicit instantiations
@@ -2974,7 +2997,7 @@ namespace lfs::core::tensor_ops {
 
         // Copy result back using pinned memory (very fast!)
         CHECK_CUDA(cudaMemcpyAsync(h_result, d_result, sizeof(int), cudaMemcpyDeviceToHost, stream));
-        CHECK_CUDA(cudaStreamSynchronize(stream));
+        CHECK_CUDA(synchronizeCUDAStream(stream));
 
         return *h_result != 0;
     }

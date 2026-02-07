@@ -3,10 +3,18 @@
 
 #include "core/logger.hpp"
 #include "internal/tensor_broadcast.hpp"
+#include "internal/cuda_stream_context.hpp"
 #include "internal/tensor_impl.hpp"
 #include "internal/tensor_ops.hpp"
 #include <algorithm>
 #include <numeric>
+
+#define CHECK_CUDA(call)                                        \
+    do {                                                        \
+        if (auto e = call; e != cudaSuccess) {                  \
+            LOG_ERROR("CUDA error: {}", cudaGetErrorString(e)); \
+        }                                                       \
+    } while (0)
 
 namespace lfs::core {
 
@@ -311,9 +319,12 @@ namespace lfs::core {
                 size_t other_bytes = other.bytes();
 
                 if (device_ == Device::CUDA) {
-                    cudaMemcpy(result.data_ptr(), data_ptr(), self_bytes, cudaMemcpyDeviceToDevice);
-                    cudaMemcpy(static_cast<char*>(result.data_ptr()) + self_bytes,
-                               other.data_ptr(), other_bytes, cudaMemcpyDeviceToDevice);
+                    const cudaStream_t active_stream = resolveCUDAStream(result.stream());
+                    CHECK_CUDA(waitForCUDAStream(active_stream, stream_));
+                    CHECK_CUDA(waitForCUDAStream(active_stream, other.stream()));
+                    cudaMemcpyAsync(result.data_ptr(), data_ptr(), self_bytes, cudaMemcpyDeviceToDevice, active_stream);
+                    cudaMemcpyAsync(static_cast<char*>(result.data_ptr()) + self_bytes,
+                                    other.data_ptr(), other_bytes, cudaMemcpyDeviceToDevice, active_stream);
                 } else {
                     std::memcpy(result.data_ptr(), data_ptr(), self_bytes);
                     std::memcpy(static_cast<char*>(result.data_ptr()) + self_bytes,
@@ -341,11 +352,13 @@ namespace lfs::core {
                 auto result = zeros(TensorShape(new_shape), device_, dtype_);
 
                 if (device_ == Device::CUDA && dtype_ == DataType::Float32) {
+                    const cudaStream_t active_stream = resolveCUDAStream(result.stream());
+                    CHECK_CUDA(waitForCUDAStream(active_stream, stream_));
                     tensor_ops::launch_pad(
                         ptr<float>(), result.ptr<float>(),
                         shape_.dims().data(), strides_.data(),
                         new_shape.data(), pad_before.data(),
-                        shape_.rank(), numel(), nullptr);
+                        shape_.rank(), numel(), active_stream);
                 } else if (device_ == Device::CPU && dtype_ == DataType::Float32) {
                     if (!is_contiguous())
                         return contiguous().movement(op, args);

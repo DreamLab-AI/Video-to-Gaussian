@@ -2,6 +2,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later */
 
 #include "core/logger.hpp"
+#include "internal/cuda_stream_context.hpp"
 #include "internal/tensor_impl.hpp"
 #include "internal/tensor_ops.hpp"
 #include <algorithm>
@@ -44,8 +45,10 @@ namespace lfs::core {
         }
 
         if (device == Device::CUDA) {
-            CHECK_CUDA(cudaMemcpy(t.ptr<float>(), data.data(), steps * sizeof(float),
-                                  cudaMemcpyHostToDevice));
+            const cudaStream_t active_stream = resolveCUDAStream(t.stream());
+            CHECK_CUDA(cudaMemcpyAsync(t.ptr<float>(), data.data(), steps * sizeof(float),
+                                       cudaMemcpyHostToDevice, active_stream));
+            CHECK_CUDA(synchronizeCUDAStream(active_stream));
         } else {
             std::memcpy(t.ptr<float>(), data.data(), steps * sizeof(float));
         }
@@ -129,8 +132,10 @@ namespace lfs::core::functional {
                 dst_data[i] = func(src[i]);
             }
 
-            cudaMemcpy(result.ptr<float>(), dst_data.data(),
-                       dst_data.size() * sizeof(float), cudaMemcpyHostToDevice);
+            const cudaStream_t active_stream = resolveCUDAStream(result.stream());
+            cudaMemcpyAsync(result.ptr<float>(), dst_data.data(),
+                            dst_data.size() * sizeof(float), cudaMemcpyHostToDevice, active_stream);
+            synchronizeCUDAStream(active_stream);
         } else {
             const float* src = input.ptr<float>();
             float* dst = result.ptr<float>();
@@ -166,8 +171,10 @@ namespace lfs::core::functional {
                 dst_data[i] = predicate(src[i]) ? 1.0f : 0.0f;
             }
 
-            cudaMemcpy(result.ptr<float>(), dst_data.data(),
-                       dst_data.size() * sizeof(float), cudaMemcpyHostToDevice);
+            const cudaStream_t active_stream = resolveCUDAStream(result.stream());
+            cudaMemcpyAsync(result.ptr<float>(), dst_data.data(),
+                            dst_data.size() * sizeof(float), cudaMemcpyHostToDevice, active_stream);
+            synchronizeCUDAStream(active_stream);
         } else {
             const float* src = input.ptr<float>();
             float* dst = result.ptr<float>();

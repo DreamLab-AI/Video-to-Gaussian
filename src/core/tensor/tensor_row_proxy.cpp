@@ -2,6 +2,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later */
 
 #include "internal/tensor_impl.hpp"
+#include "internal/cuda_stream_context.hpp"
 #include <cstring>
 #include <cuda_runtime.h>
 
@@ -31,12 +32,17 @@ namespace lfs::core {
 
         if (tensor_->device() != Device::CPU) {
             thread_local static float cuda_read_value = 0.0f;
+            const cudaStream_t active_stream = resolveCUDAStream(tensor_->stream());
 
-            cudaError_t err = cudaMemcpy(
+            cudaError_t err = cudaMemcpyAsync(
                 &cuda_read_value,
                 tensor_->ptr<float>() + linear_idx,
                 sizeof(float),
-                cudaMemcpyDeviceToHost);
+                cudaMemcpyDeviceToHost,
+                active_stream);
+            if (err == cudaSuccess) {
+                err = synchronizeCUDAStream(active_stream);
+            }
 
             if (err != cudaSuccess) {
                 throw std::runtime_error(
@@ -70,11 +76,16 @@ namespace lfs::core {
 
         if (tensor_->device() == Device::CUDA) {
             float value = 0.0f;
-            cudaError_t err = cudaMemcpy(
+            const cudaStream_t active_stream = resolveCUDAStream(tensor_->stream());
+            cudaError_t err = cudaMemcpyAsync(
                 &value,
                 tensor_->ptr<float>() + linear_idx,
                 sizeof(float),
-                cudaMemcpyDeviceToHost);
+                cudaMemcpyDeviceToHost,
+                active_stream);
+            if (err == cudaSuccess) {
+                err = synchronizeCUDAStream(active_stream);
+            }
             if (err != cudaSuccess) {
                 throw std::runtime_error(
                     std::string("CUDA memcpy failed in TensorRowProxy::operator[]: ") + cudaGetErrorString(err));
@@ -116,11 +127,16 @@ namespace lfs::core {
 
         if (tensor_->device() == Device::CUDA) {
             float value = 0.0f;
-            cudaError_t err = cudaMemcpy(
+            const cudaStream_t active_stream = resolveCUDAStream(tensor_->stream());
+            cudaError_t err = cudaMemcpyAsync(
                 &value,
                 tensor_->ptr<float>() + linear_idx,
                 sizeof(float),
-                cudaMemcpyDeviceToHost);
+                cudaMemcpyDeviceToHost,
+                active_stream);
+            if (err == cudaSuccess) {
+                err = synchronizeCUDAStream(active_stream);
+            }
             if (err != cudaSuccess) {
                 throw std::runtime_error(
                     std::string("CUDA memcpy failed in TensorRowProxy::item(): ") + cudaGetErrorString(err));
@@ -175,14 +191,22 @@ namespace lfs::core {
             size_t copy_bytes = row_elements * dtype_size(tensor_->dtype());
 
             if (tensor_->device() == Device::CUDA) {
-                cudaError_t err = cudaMemcpy(
+                const cudaStream_t active_stream = resolveCUDAStream(result.stream());
+                cudaError_t err = cudaMemcpyAsync(
                     result.data_ptr(),
                     static_cast<const char*>(tensor_->data_ptr()) + byte_offset,
                     copy_bytes,
-                    cudaMemcpyDeviceToDevice);
+                    cudaMemcpyDeviceToDevice,
+                    active_stream);
                 if (err != cudaSuccess) {
                     throw std::runtime_error(
                         std::string("CUDA memcpy failed in TensorRowProxy tensor conversion: ") +
+                        cudaGetErrorString(err));
+                }
+                err = synchronizeCUDAStream(active_stream);
+                if (err != cudaSuccess) {
+                    throw std::runtime_error(
+                        std::string("CUDA stream sync failed in TensorRowProxy tensor conversion: ") +
                         cudaGetErrorString(err));
                 }
             } else {
@@ -201,7 +225,9 @@ namespace lfs::core {
         auto result = Tensor::empty({1}, tensor_->device(), tensor_->dtype());
 
         if (tensor_->device() == Device::CUDA) {
-            cudaMemcpy(result.data_ptr(), &val, sizeof(float), cudaMemcpyHostToDevice);
+            const cudaStream_t active_stream = resolveCUDAStream(result.stream());
+            cudaMemcpyAsync(result.data_ptr(), &val, sizeof(float), cudaMemcpyHostToDevice, active_stream);
+            synchronizeCUDAStream(active_stream);
         } else {
             *result.ptr<float>() = val;
         }
@@ -251,14 +277,26 @@ namespace lfs::core {
                                   : other.to(tensor_->device());
 
             if (tensor_->device() == Device::CUDA) {
-                cudaError_t err = cudaMemcpy(
+                const cudaStream_t active_stream = resolveCUDAStream(tensor_->stream());
+                cudaError_t err = waitForCUDAStream(active_stream, other_copy.stream());
+                if (err != cudaSuccess) {
+                    throw std::runtime_error(
+                        std::string("CUDA stream wait failed in row assignment: ") + cudaGetErrorString(err));
+                }
+                err = cudaMemcpyAsync(
                     static_cast<char*>(tensor_->data_ptr()) + byte_offset,
                     other_copy.data_ptr(),
                     copy_bytes,
-                    cudaMemcpyDeviceToDevice);
+                    cudaMemcpyDeviceToDevice,
+                    active_stream);
                 if (err != cudaSuccess) {
                     throw std::runtime_error(
                         std::string("CUDA memcpy failed in row assignment: ") + cudaGetErrorString(err));
+                }
+                err = synchronizeCUDAStream(active_stream);
+                if (err != cudaSuccess) {
+                    throw std::runtime_error(
+                        std::string("CUDA stream sync failed in row assignment: ") + cudaGetErrorString(err));
                 }
             } else {
                 std::memcpy(
@@ -279,11 +317,14 @@ namespace lfs::core {
             size_t linear_idx = row_index_ * tensor_->stride(0);
 
             if (tensor_->device() == Device::CUDA) {
-                cudaMemcpy(
+                const cudaStream_t active_stream = resolveCUDAStream(tensor_->stream());
+                cudaMemcpyAsync(
                     tensor_->ptr<float>() + linear_idx,
                     &val,
                     sizeof(float),
-                    cudaMemcpyHostToDevice);
+                    cudaMemcpyHostToDevice,
+                    active_stream);
+                synchronizeCUDAStream(active_stream);
             } else {
                 tensor_->ptr<float>()[linear_idx] = val;
             }
@@ -312,11 +353,14 @@ namespace lfs::core {
         size_t linear_idx = row_index_ * tensor_->stride(0);
 
         if (tensor_->device() == Device::CUDA) {
-            cudaMemcpy(
+            const cudaStream_t active_stream = resolveCUDAStream(tensor_->stream());
+            cudaMemcpyAsync(
                 tensor_->ptr<float>() + linear_idx,
                 &value,
                 sizeof(float),
-                cudaMemcpyHostToDevice);
+                cudaMemcpyHostToDevice,
+                active_stream);
+            synchronizeCUDAStream(active_stream);
         } else {
             tensor_->ptr<float>()[linear_idx] = value;
         }
