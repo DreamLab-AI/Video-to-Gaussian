@@ -969,29 +969,6 @@
     "playback_time": "Riproduzione {:.2f}s",
     "keyframe_preview": "Anteprima Keyframe {}"
   },
-  "sequencer_settings": {
-    "sequencer": "Sequencer",
-    "show_camera_path": "Mostra percorso camera",
-    "speed": "Velocita",
-    "snap_to_grid": "Aggancia alla griglia",
-    "interval": "Intervallo",
-    "follow_playback": "Segui riproduzione",
-    "show_film_strip": "Mostra striscia di fotogrammi",
-    "preview_size": "Dimensione anteprima",
-    "show_pip_preview": "Mostra anteprima",
-    "save_path": "Salva percorso...",
-    "load_path": "Carica percorso...",
-    "clear_all_keyframes": "Cancella tutti i keyframe",
-    "clear_confirm": "Eliminare tutti i keyframe? Non sara possibile annullare.",
-    "video_export": "Esportazione video",
-    "format": "Formato",
-    "width": "Larghezza",
-    "height": "Altezza",
-    "framerate": "Frequenza fotogrammi",
-    "quality": "Qualita",
-    "export_video": "Esporta video...",
-    "custom": "Personalizzato"
-  },
   "rendering_panel": {
     "fov_format": "FOV: {hfov:.1f}° H / {vfov:.1f}° V"
   },
