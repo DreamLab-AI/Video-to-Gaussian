@@ -751,6 +751,7 @@
     "disabled": "已禁用"
   },
   "image_preview": {
+    "title": "图像预览",
     "image_section": "图像",
     "file_section": "文件",
     "view_section": "视图",

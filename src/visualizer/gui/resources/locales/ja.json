@@ -751,6 +751,7 @@
     "disabled": "無効"
   },
   "image_preview": {
+    "title": "イメージプレビュー",
     "image_section": "画像",
     "file_section": "ファイル",
     "view_section": "表示",

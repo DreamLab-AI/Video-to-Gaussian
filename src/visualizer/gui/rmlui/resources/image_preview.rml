@@ -1,0 +1,47 @@
+<rml>
+<head>
+  <link type="text/template" href="floating_window.rml"/>
+  <link type="text/rcss" href="image_preview.rcss"/>
+</head>
+<body template="floating-window" data-model="image_preview">
+
+  <div id="main-area">
+    <div id="filmstrip"></div>
+    <div id="image-container">
+      <img id="main-image" src=""/>
+      <img id="mask-overlay" src=""/>
+      <span id="no-image-text"></span>
+    </div>
+    <div id="sidebar">
+      <span class="sidebar-section" id="sidebar-image-label"></span>
+      <span class="sidebar-value" id="sidebar-dimensions"></span>
+      <span class="sidebar-value" id="sidebar-megapixels"></span>
+      <div class="separator"></div>
+      <span class="sidebar-section" id="sidebar-file-label"></span>
+      <span class="sidebar-value" id="sidebar-fileinfo"></span>
+      <span class="sidebar-value sidebar-path" id="sidebar-filepath"></span>
+      <div class="separator"></div>
+      <span class="sidebar-section" id="sidebar-view-label"></span>
+      <span class="sidebar-value" id="sidebar-zoom"></span>
+      <div class="sidebar-check-row">
+        <input type="checkbox" id="cb-fit" checked/>
+        <label for="cb-fit" id="cb-fit-label"></label>
+      </div>
+      <div class="separator" id="sidebar-mask-sep"></div>
+      <span class="sidebar-section" id="sidebar-mask-label"></span>
+      <span class="sidebar-value" id="sidebar-mask-name"></span>
+      <div class="sidebar-check-row" id="mask-check-row">
+        <input type="checkbox" id="cb-mask"/>
+        <label for="cb-mask" id="cb-mask-label"></label>
+      </div>
+    </div>
+  </div>
+
+  <div id="status-bar">
+    <span id="status-info"></span>
+    <span id="status-zoom"></span>
+    <span id="btn-fit" class="btn btn--secondary">Fit</span>
+  </div>
+
+</body>
+</rml>

@@ -271,6 +271,8 @@ namespace lfs::python {
     void PyRmlElement::set_scroll_top(float v) { elem_->SetScrollTop(v); }
     float PyRmlElement::scroll_width() { return elem_->GetScrollWidth(); }
     float PyRmlElement::scroll_height() { return elem_->GetScrollHeight(); }
+    float PyRmlElement::client_width() { return elem_->GetClientWidth(); }
+    float PyRmlElement::client_height() { return elem_->GetClientHeight(); }
     void PyRmlElement::scroll_into_view(bool align_top) { elem_->ScrollIntoView(align_top); }
 
     bool PyRmlElement::focus() { return elem_->Focus(); }
@@ -581,6 +583,8 @@ namespace lfs::python {
             .def_prop_rw("scroll_top", &PyRmlElement::scroll_top, &PyRmlElement::set_scroll_top)
             .def_prop_ro("scroll_width", &PyRmlElement::scroll_width)
             .def_prop_ro("scroll_height", &PyRmlElement::scroll_height)
+            .def_prop_ro("client_width", &PyRmlElement::client_width)
+            .def_prop_ro("client_height", &PyRmlElement::client_height)
             .def("scroll_into_view", &PyRmlElement::scroll_into_view,
                  nb::arg("align_top") = true)
             .def("focus", &PyRmlElement::focus)

@@ -223,6 +223,7 @@ namespace lfs::python {
         nb::object g_show_dataset_popup_callback;
         nb::object g_show_resume_popup_callback;
         nb::object g_request_exit_callback;
+        nb::object g_open_camera_preview_callback;
 
         // Redraw request flag for hot-reload notification
         std::atomic<bool> g_redraw_requested{false};
@@ -3430,7 +3431,8 @@ namespace lfs::python {
                                  {0, 0}, {u1, v1}, t, {0, 0, 0, 0});
                 },
                 nb::arg("texture"), nb::arg("size"), nb::arg("tint") = nb::none(), "Draw a DynamicTexture with automatic UV scaling")
-            .def("image_tensor", [](PyUILayout& /*self*/, const std::string& label, PyTensor& tensor, std::tuple<float, float> size, nb::object tint) {
+            .def(
+                "image_tensor", [](PyUILayout& /*self*/, const std::string& label, PyTensor& tensor, std::tuple<float, float> size, nb::object tint) {
                     PyDynamicTexture* tex_ptr = nullptr;
                     {
                         std::lock_guard lock(g_dynamic_textures_mutex);
@@ -3859,6 +3861,24 @@ namespace lfs::python {
             "Register callback for RequestExit event");
 
         m.def(
+            "on_open_camera_preview",
+            [](nb::object callback) {
+                g_open_camera_preview_callback = callback;
+                lfs::core::events::cmd::OpenCameraPreview::when([](const auto& e) {
+                    if (g_open_camera_preview_callback && !g_open_camera_preview_callback.is_none()) {
+                        nb::gil_scoped_acquire guard;
+                        try {
+                            g_open_camera_preview_callback(e.cam_id);
+                        } catch (const std::exception& ex) {
+                            LOG_ERROR("OpenCameraPreview callback error: {}", ex.what());
+                        }
+                    }
+                });
+            },
+            nb::arg("callback"),
+            "Register callback for OpenCameraPreview event");
+
+        m.def(
             "set_exit_popup_open",
             [](bool open) { set_exit_popup_open(open); },
             nb::arg("open"),
@@ -4158,6 +4178,14 @@ namespace lfs::python {
                     lfs::python::delete_gl_texture(static_cast<uint32_t>(tex_id));
             },
             nb::arg("texture_id"), "Release an OpenGL texture");
+
+        m.def(
+            "get_image_info",
+            [](const std::string& path) -> nb::tuple {
+                auto [w, h, c] = lfs::core::get_image_info(std::filesystem::path(path));
+                return nb::make_tuple(w, h, c);
+            },
+            nb::arg("path"), "Get image dimensions without loading pixel data, returns (width, height, channels)");
 
         m.def(
             "preload_image_async",
@@ -4667,6 +4695,7 @@ namespace lfs::python {
             g_show_dataset_popup_callback = nb::object();
             g_show_resume_popup_callback = nb::object();
             g_request_exit_callback = nb::object();
+            g_open_camera_preview_callback = nb::object();
         };
         set_bridge(bridge);
 

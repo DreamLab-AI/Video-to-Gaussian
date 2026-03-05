@@ -107,7 +107,8 @@ namespace lfs::vis::gui {
         return result;
     }
 
-    void PanelRegistry::draw_panels(PanelSpace space, const PanelDrawContext& ctx) {
+    void PanelRegistry::draw_panels(PanelSpace space, const PanelDrawContext& ctx,
+                                    const PanelInputState* input) {
         std::vector<PanelSnapshot> snapshots;
         {
             std::lock_guard lock(mutex_);
@@ -293,6 +294,7 @@ namespace lfs::vis::gui {
                             }
                         }
 
+                        snap.panel->setInput(input);
                         snap.panel->drawDirect(px, py, w, h, ctx);
                     } else {
                         if (snap.initial_width > 0 || snap.initial_height > 0)

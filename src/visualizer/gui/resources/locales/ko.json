@@ -751,6 +751,7 @@
     "disabled": "비활성화됨"
   },
   "image_preview": {
+    "title": "이미지 미리보기",
     "image_section": "이미지",
     "file_section": "파일",
     "view_section": "보기",

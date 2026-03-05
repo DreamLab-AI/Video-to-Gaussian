@@ -518,8 +518,8 @@ namespace lfs::vis::gui {
             }
         }
 
-        wants_keyboard_ = has_text_focus_;
-        if (has_text_focus_)
+        wants_keyboard_ = has_text_focus_ || (foreground_ && hovered);
+        if (wants_keyboard_)
             s_frame_wants_keyboard = true;
 
         bool forward_keys = has_text_focus_ || hovered;

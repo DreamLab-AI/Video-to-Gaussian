@@ -751,6 +751,7 @@
     "disabled": "Deshabilitado"
   },
   "image_preview": {
+    "title": "Vista previa de imagen",
     "image_section": "IMAGEN",
     "file_section": "ARCHIVO",
     "view_section": "VISTA",

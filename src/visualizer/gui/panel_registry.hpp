@@ -164,7 +164,8 @@ namespace lfs::vis::gui {
         void unregister_panel(const std::string& idname);
         void unregister_all_non_native();
 
-        void draw_panels(PanelSpace space, const PanelDrawContext& ctx);
+        void draw_panels(PanelSpace space, const PanelDrawContext& ctx,
+                         const PanelInputState* input = nullptr);
         void draw_single_panel(const std::string& idname, const PanelDrawContext& ctx);
         void draw_child_panels(const std::string& parent_idname, const PanelDrawContext& ctx);
         bool has_panels(PanelSpace space) const;

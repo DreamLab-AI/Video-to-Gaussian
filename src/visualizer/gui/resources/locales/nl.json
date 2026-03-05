@@ -751,6 +751,7 @@
     "disabled": "Uitgeschakeld"
   },
   "image_preview": {
+    "title": "Afbeeldingsvoorbeeld",
     "image_section": "AFBEELDING",
     "file_section": "BESTAND",
     "view_section": "WEERGAVE",

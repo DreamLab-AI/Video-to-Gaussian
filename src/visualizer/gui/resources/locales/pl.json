@@ -751,6 +751,7 @@
     "disabled": "Wyłączony"
   },
   "image_preview": {
+    "title": "Podgl\u0105d obrazu",
     "image_section": "OBRAZ",
     "file_section": "PLIK",
     "view_section": "WIDOK",

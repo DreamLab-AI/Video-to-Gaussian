@@ -1894,6 +1894,9 @@ def on_show_resume_checkpoint_popup(callback: object) -> None:
 def on_request_exit(callback: object) -> None:
     """Register callback for RequestExit event"""
 
+def on_open_camera_preview(callback: object) -> None:
+    """Register callback for OpenCameraPreview event"""
+
 def set_exit_popup_open(open: bool) -> None:
     """Set exit popup open state (for window close callback)"""
 
@@ -1981,6 +1984,11 @@ def load_thumbnail(path: str, max_size: int) -> tuple:
 
 def release_texture(texture_id: int) -> None:
     """Release an OpenGL texture"""
+
+def get_image_info(path: str) -> tuple:
+    """
+    Get image dimensions without loading pixel data, returns (width, height, channels)
+    """
 
 def preload_image_async(path: str) -> None:
     """Start async preload of image data"""

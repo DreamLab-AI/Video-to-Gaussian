@@ -234,7 +234,8 @@ class ScenePanel(RmlPanel):
         if not node:
             return
         if node_type == "CAMERA":
-            lf.ui.go_to_camera_view(node.camera_uid)
+            from .image_preview_panel import open_camera_preview_by_uid
+            open_camera_preview_by_uid(node.camera_uid)
         elif node_type == "KEYFRAME":
             kf = node.keyframe_data()
             if kf:

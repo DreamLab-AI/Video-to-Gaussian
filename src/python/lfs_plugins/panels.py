@@ -59,8 +59,11 @@ def register_builtin_panels():
         lf.ui.set_panel_enabled("lfs.getting_started", False)
 
         from .image_preview_panel import ImagePreviewPanel
-        lf.register_class(ImagePreviewPanel)
+        lf.ui.register_rml_panel(ImagePreviewPanel)
         lf.ui.set_panel_enabled("lfs.image_preview", False)
+
+        from .image_preview_panel import open_camera_preview_by_uid
+        lf.ui.on_open_camera_preview(open_camera_preview_by_uid)
 
         from .scripts_panel import ScriptsPanel
         lf.register_class(ScriptsPanel)

@@ -107,6 +107,8 @@ namespace lfs::python {
         void set_scroll_top(float v);
         float scroll_width();
         float scroll_height();
+        float client_width();
+        float client_height();
         void scroll_into_view(bool align_top = true);
 
         // Focus

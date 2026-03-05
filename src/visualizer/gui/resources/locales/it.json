@@ -751,6 +751,7 @@
     "disabled": "Disabilitato"
   },
   "image_preview": {
+    "title": "Anteprima immagine",
     "image_section": "IMMAGINE",
     "file_section": "FILE",
     "view_section": "VISTA",
