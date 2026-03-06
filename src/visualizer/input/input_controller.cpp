@@ -392,7 +392,6 @@ namespace lfs::vis {
             if (hovered_camera_id_ >= 0) {
                 if (is_double_click && hovered_camera_id_ == last_clicked_camera_id_) {
                     cmd::GoToCamView{.cam_id = hovered_camera_id_}.emit();
-                    cmd::OpenCameraPreview{.cam_id = hovered_camera_id_}.emit();
 
                     // Reset click tracking to prevent triple-click
                     last_click_time_ = std::chrono::steady_clock::time_point();
