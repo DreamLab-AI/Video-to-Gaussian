@@ -173,24 +173,52 @@ namespace lfs::python {
             (info.space == gui::PanelSpace::Floating || info.space == gui::PanelSpace::Dockable);
         info.enabled = !default_closed;
 
+        std::string module_prefix;
+        try {
+            module_prefix = nb::cast<std::string>(panel_class.attr("__module__"));
+        } catch (...) {
+        }
+
         gui::PanelRegistry::instance().register_panel(std::move(info));
-        adapters_[idname] = std::dynamic_pointer_cast<PythonPanelAdapter>(adapter);
-        if (!adapters_[idname])
-            rml_adapters_[idname] = adapter;
+        panels_[idname] = {adapter, module_prefix};
     }
 
     void PyPanelRegistry::unregister_panel(nb::object panel_class) {
         std::lock_guard lock(mutex_);
 
-        std::string idname = get_class_id(panel_class);
+        std::string idname;
+        if (nb::hasattr(panel_class, "idname")) {
+            idname = nb::cast<std::string>(panel_class.attr("idname"));
+        }
+        if (idname.empty()) {
+            idname = get_class_id(panel_class);
+        }
+
         gui::PanelRegistry::instance().unregister_panel(idname);
-        adapters_.erase(idname);
+        panels_.erase(idname);
     }
 
     void PyPanelRegistry::unregister_all() {
         std::lock_guard lock(mutex_);
         gui::PanelRegistry::instance().unregister_all_non_native();
-        adapters_.clear();
+        panels_.clear();
+    }
+
+    void PyPanelRegistry::unregister_for_module(const std::string& prefix) {
+        std::lock_guard lock(mutex_);
+
+        std::vector<std::string> to_remove;
+        for (const auto& [idname, entry] : panels_) {
+            if (entry.module_prefix == prefix || entry.module_prefix.starts_with(prefix + ".")) {
+                to_remove.push_back(idname);
+            }
+        }
+
+        for (const auto& idname : to_remove) {
+            gui::PanelRegistry::instance().unregister_panel(idname);
+            panels_.erase(idname);
+            LOG_INFO("Unregistered panel '{}' for module '{}'", idname, prefix);
+        }
     }
 
     void PyPanelRegistry::register_rml_panel(nb::object panel_class, void* rml_manager) {
@@ -271,8 +299,14 @@ namespace lfs::python {
         info.initial_width = initial_width;
         info.initial_height = initial_height;
 
+        std::string module_prefix;
+        try {
+            module_prefix = nb::cast<std::string>(panel_class.attr("__module__"));
+        } catch (...) {
+        }
+
         gui::PanelRegistry::instance().register_panel(std::move(info));
-        rml_adapters_[idname] = adapter;
+        panels_[idname] = {adapter, module_prefix};
 
         LOG_INFO("RmlUI panel '{}' registered", label);
     }
@@ -317,6 +351,14 @@ namespace lfs::python {
                 PyPanelRegistry::instance().unregister_all();
             },
             "Unregister all Python panels");
+
+        m.def(
+            "unregister_panels_for_module",
+            [](const std::string& prefix) {
+                PyPanelRegistry::instance().unregister_for_module(prefix);
+            },
+            nb::arg("module_prefix"),
+            "Unregister all panels registered by a given module prefix");
 
         m.def(
             "get_panel_names", [](const std::string& space) {

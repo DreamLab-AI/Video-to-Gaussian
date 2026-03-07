@@ -77,7 +77,7 @@ class PluginMarketplacePanel(RmlPanel):
         self._sort_idx = 0
 
         self._card_ops: Dict[str, CardOpState] = {}
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._pending_uninstall_name = ""
         self._pending_uninstall_card_id = ""
 
@@ -820,18 +820,24 @@ class PluginMarketplacePanel(RmlPanel):
 
         tr = lf.ui.tr
 
-        def do_unload(on_progress):
-            on_progress(tr("plugin_manager.status.unloading").format(name=name))
+        try:
             if not mgr.unload(name):
-                raise RuntimeError(tr("plugin_manager.status.unload_failed"))
+                with self._lock:
+                    state = self._card_ops.setdefault(card_id, CardOpState())
+                    state.phase = CardOpPhase.ERROR
+                    state.message = tr("plugin_manager.status.unload_failed")
+                return
             self._invalidate_discover_cache()
-
-        self._run_async(
-            card_id,
-            do_unload,
-            tr("plugin_manager.status.unloaded").format(name=name),
-            tr("plugin_manager.status.unload_failed"),
-        )
+            with self._lock:
+                state = self._card_ops.setdefault(card_id, CardOpState())
+                state.phase = CardOpPhase.SUCCESS
+                state.message = tr("plugin_manager.status.unloaded").format(name=name)
+                state.finished_at = time.monotonic()
+        except Exception as e:
+            with self._lock:
+                state = self._card_ops.setdefault(card_id, CardOpState())
+                state.phase = CardOpPhase.ERROR
+                state.message = f"{tr('plugin_manager.status.unload_failed')}: {e}"
 
     def _reload_plugin(self, mgr, name: str, card_id: str):
         import lichtfeld as lf

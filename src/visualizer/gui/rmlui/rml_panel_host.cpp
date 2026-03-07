@@ -209,7 +209,13 @@ namespace lfs::vis::gui {
         assert(manager_);
     }
 
-    RmlPanelHost::~RmlPanelHost() = default;
+    RmlPanelHost::~RmlPanelHost() {
+        if (rml_context_ && manager_) {
+            manager_->destroyContext(context_name_);
+            rml_context_ = nullptr;
+            document_ = nullptr;
+        }
+    }
 
     std::string RmlPanelHost::generateThemeRCSS() const {
         const auto& p = lfs::vis::theme().palette;

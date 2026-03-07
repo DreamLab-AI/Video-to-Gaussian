@@ -166,25 +166,27 @@ namespace lfs::vis::gui {
     }
 
     RmlPythonPanelAdapter::~RmlPythonPanelAdapter() {
-        if (host_) {
-            if (loaded_ && lfs::python::can_acquire_gil()) {
-                const lfs::python::GilAcquire gil;
-                if (nb::hasattr(panel_instance_, "on_unload")) {
-                    try {
-                        const auto& ops = lfs::python::get_rml_panel_host_ops();
-                        auto* doc = static_cast<Rml::ElementDocument*>(
-                            ops.get_document(host_));
-                        if (doc) {
-                            auto py_doc = lfs::python::PyRmlDocument(doc);
-                            panel_instance_.attr("on_unload")(py_doc);
-                        }
-                    } catch (const std::exception& e) {
-                        LOG_ERROR("RmlPanel on_unload error: {}", e.what());
+        if (!host_)
+            return;
+
+        const auto& ops = lfs::python::get_rml_panel_host_ops();
+        if (lfs::python::can_acquire_gil()) {
+            const lfs::python::GilAcquire gil;
+            if (loaded_ && nb::hasattr(panel_instance_, "on_unload")) {
+                try {
+                    auto* doc = static_cast<Rml::ElementDocument*>(
+                        ops.get_document(host_));
+                    if (doc) {
+                        auto py_doc = lfs::python::PyRmlDocument(doc);
+                        panel_instance_.attr("on_unload")(py_doc);
                     }
+                } catch (const std::exception& e) {
+                    LOG_ERROR("RmlPanel on_unload error: {}", e.what());
                 }
             }
-            const auto& ops = lfs::python::get_rml_panel_host_ops();
             assert(ops.destroy);
+            ops.destroy(host_);
+        } else {
             ops.destroy(host_);
         }
     }
