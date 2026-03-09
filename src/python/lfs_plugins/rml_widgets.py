@@ -47,7 +47,6 @@ def sync_section_state(content_element, expanded, header_element=None, arrow_ele
     content_element.remove_property("max-height")
     content_element.remove_property("opacity")
     content_element.remove_property("pointer-events")
-    content_element.remove_property("display")
 
 
 def animate_section_toggle(content_element, expanding, arrow_element=None,
@@ -60,7 +59,6 @@ def animate_section_toggle(content_element, expanding, arrow_element=None,
 
     if expanding:
         content_element.set_class("collapsed", False)
-        content_element.remove_property("display")
         content_element.remove_property("pointer-events")
 
         current_h = max(content_element.client_height, 0)

@@ -241,6 +241,13 @@ namespace lfs::vis::gui::rml_theme {
         const int fp_x = static_cast<int>(t.sizes.frame_padding.x);
         const int fp_y = static_cast<int>(t.sizes.frame_padding.y);
         const int window_rounding = std::max(4, static_cast<int>(t.sizes.window_rounding));
+        const int scrollbar_size = static_cast<int>(t.sizes.scrollbar_size);
+        const auto border_soft = colorToRmlAlpha(p.border, 0.3f);
+        const auto border_med = colorToRmlAlpha(p.border, 0.5f);
+        const auto text_hi = colorToRmlAlpha(p.text, 0.9f);
+        const auto scroll_track = colorToRmlAlpha(p.background, 0.5f);
+        const auto scroll_thumb = colorToRmlAlpha(p.text_dim, 0.63f);
+        const auto scroll_hover = colorToRmlAlpha(p.primary, 0.78f);
 
         const auto check_decorator =
             check_path.empty()
@@ -398,6 +405,26 @@ namespace lfs::vis::gui::rml_theme {
                        "#window-frame {{ border-color: {}; border-radius: {}dp; }}\n",
                        colorToRmlAlpha(p.border, 0.4f),
                        static_cast<int>(t.sizes.window_rounding)) +
+                   std::format(
+                       "scrollbarvertical {{ width: {}dp; }}\n"
+                       "scrollbarvertical slidertrack {{ background-color: {}; }}\n"
+                       "scrollbarvertical sliderbar {{ background-color: {}; }}\n"
+                       "scrollbarvertical sliderbar:hover {{ background-color: {}; }}\n"
+                       "scrollbarhorizontal {{ height: {}dp; }}\n"
+                       "scrollbarhorizontal slidertrack {{ background-color: {}; }}\n"
+                       "scrollbarhorizontal sliderbar {{ background-color: {}; }}\n"
+                       "scrollbarhorizontal sliderbar:hover {{ background-color: {}; }}\n",
+                       scrollbar_size, scroll_track, scroll_thumb, scroll_hover,
+                       scrollbar_size, scroll_track, scroll_thumb, scroll_hover) +
+                   std::format(
+                       ".icon-btn:hover {{ background-color: {}; }}\n"
+                       ".icon-btn:active {{ background-color: {}; }}\n"
+                       ".icon-btn img {{ image-color: {}; }}\n"
+                       ".icon-btn.selected img {{ image-color: {}; }}\n"
+                       ".section-header:hover .section-arrow,\n"
+                       ".section-header.is-expanded .section-arrow {{ color: {}; }}\n"
+                       ".context-menu-label {{ color: {}; }}\n",
+                       border_soft, border_med, text_hi, background, text, text_dim) +
                    [&]() -> std::string {
             if (!t.shadows.enabled)
                 return {};
