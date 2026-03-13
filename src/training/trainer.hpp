@@ -283,6 +283,7 @@ namespace lfs::training {
         lfs::core::Tensor random_bg_buffer_{};                           // Reusable buffer for random background
         std::unique_ptr<TrainingProgress> progress_;
         size_t train_dataset_size_ = 0;
+        size_t total_cameras_count_ = 0;
 
         // Pre-loaded mask from pipelined dataloader (used in train_step)
         lfs::core::Tensor pipelined_mask_;

@@ -108,6 +108,8 @@ namespace lfs::training {
         ready_to_start_ = false;
         current_iteration_ = 0;
         current_loss_ = 0.0f;
+        train_dataset_size_ = 0;
+        total_cameras_count_ = 0;
 
         LOG_DEBUG("Trainer cleanup complete");
     }
@@ -121,18 +123,22 @@ namespace lfs::training {
             BilateralGrid::Config config;
             config.lr = params_.optimization.bilateral_grid_lr;
 
+            // BilateralGrid is indexed with cam->uid() in the training loop. Those UIDs stay
+            // in the original camera space even when train/val splits are enabled, so the grid
+            // must be sized for the full camera set rather than only the training subset.
             bilateral_grid_ = std::make_unique<BilateralGrid>(
-                static_cast<int>(train_dataset_size_),
+                static_cast<int>(total_cameras_count_),
                 params_.optimization.bilateral_grid_X,
                 params_.optimization.bilateral_grid_Y,
                 params_.optimization.bilateral_grid_W,
                 params_.optimization.iterations,
                 config);
 
-            LOG_INFO("Bilateral grid initialized: {}x{}x{} for {} images",
+            LOG_INFO("Bilateral grid initialized: {}x{}x{} for {} camera slots ({} train images)",
                      params_.optimization.bilateral_grid_X,
                      params_.optimization.bilateral_grid_Y,
                      params_.optimization.bilateral_grid_W,
+                     total_cameras_count_,
                      train_dataset_size_);
 
             return {};
@@ -466,6 +472,8 @@ namespace lfs::training {
             } else {
                 return std::unexpected("No camera source available");
             }
+
+            total_cameras_count_ = source_cameras.size();
 
             // Handle dataset split based on evaluation flag
             if (params.optimization.enable_eval) {
