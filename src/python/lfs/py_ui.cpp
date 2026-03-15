@@ -3596,7 +3596,8 @@ namespace lfs::python {
                                  {0, 0}, {u1, v1}, t, {0, 0, 0, 0});
                 },
                 nb::arg("texture"), nb::arg("size"), nb::arg("tint") = nb::none(), "Draw a DynamicTexture with automatic UV scaling")
-            .def("image_tensor", [](PyUILayout& /*self*/, const std::string& label, PyTensor& tensor, std::tuple<float, float> size, nb::object tint) {
+            .def(
+                "image_tensor", [](PyUILayout& /*self*/, const std::string& label, PyTensor& tensor, std::tuple<float, float> size, nb::object tint) {
                     PyDynamicTexture* tex_ptr = nullptr;
                     {
                         std::lock_guard lock(g_dynamic_textures_mutex);
@@ -3787,7 +3788,7 @@ namespace lfs::python {
                 auto result = lfs::vis::gui::SavePlyFileDialog(default_name);
                 return result.empty() ? "" : result.string();
             },
-            nb::arg("default_name") = "export.ply",
+            nb::arg("default_name") = "export",
             "Open a save file dialog for PLY files. Returns empty string if cancelled.");
 
         m.def(
@@ -3796,7 +3797,7 @@ namespace lfs::python {
                 auto result = lfs::vis::gui::SaveSogFileDialog(default_name);
                 return result.empty() ? "" : result.string();
             },
-            nb::arg("default_name") = "export.sog",
+            nb::arg("default_name") = "export",
             "Open a save file dialog for SOG files. Returns empty string if cancelled.");
 
         m.def(
@@ -3805,7 +3806,7 @@ namespace lfs::python {
                 auto result = lfs::vis::gui::SaveSpzFileDialog(default_name);
                 return result.empty() ? "" : result.string();
             },
-            nb::arg("default_name") = "export.spz",
+            nb::arg("default_name") = "export",
             "Open a save file dialog for SPZ files. Returns empty string if cancelled.");
 
         m.def(
@@ -3814,7 +3815,7 @@ namespace lfs::python {
                 auto result = lfs::vis::gui::SaveHtmlFileDialog(default_name);
                 return result.empty() ? "" : result.string();
             },
-            nb::arg("default_name") = "viewer.html",
+            nb::arg("default_name") = "viewer",
             "Open a save file dialog for HTML viewer files. Returns empty string if cancelled.");
 
         m.def(

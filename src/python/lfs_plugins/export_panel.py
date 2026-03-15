@@ -349,13 +349,13 @@ class ExportPanel(Panel):
 
     def _get_save_path(self, default_name):
         if self._format == ExportFormat.PLY:
-            return lf.ui.save_ply_file_dialog(f"{default_name}.ply")
+            return lf.ui.save_ply_file_dialog(default_name)
         if self._format == ExportFormat.SOG:
-            return lf.ui.save_sog_file_dialog(f"{default_name}.sog")
+            return lf.ui.save_sog_file_dialog(default_name)
         if self._format == ExportFormat.SPZ:
-            return lf.ui.save_spz_file_dialog(f"{default_name}.spz")
+            return lf.ui.save_spz_file_dialog(default_name)
         if self._format == ExportFormat.HTML_VIEWER:
-            return lf.ui.save_html_file_dialog(f"{default_name}.html")
+            return lf.ui.save_html_file_dialog(default_name)
         return None
 
     def _do_export(self):
