@@ -74,6 +74,15 @@ namespace lfs::core {
             scale_steps(1.0f / steps_scaler);
         }
 
+        int OptimizationParameters::resolved_ppisp_controller_activation_step() const {
+            if (ppisp_controller_activation_step >= 0)
+                return ppisp_controller_activation_step;
+
+            const float clamped_scaler = std::max(steps_scaler, 1.0f);
+            const int tail_iters = static_cast<int>(std::lround(5000.0f * clamped_scaler));
+            return std::max(0, static_cast<int>(iterations) - tail_iters);
+        }
+
         nlohmann::json OptimizationParameters::to_json() const {
 
             nlohmann::json opt_json;

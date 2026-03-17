@@ -156,17 +156,11 @@
           <input type="checkbox" data-checked="ppisp_use_controller" />
         </div>
         <div data-if="dep_ppisp_controller">
-          <div class="setting-row">
-            <span class="prop-label">{{label_ppisp_auto}}</span>
-            <input type="checkbox" data-checked="ppisp_auto_step" />
-          </div>
-          <div data-if="dep_ppisp_manual_step">
-            <div class="setting-row" data-tooltip="training.tooltip.ppisp_activation_step">
-              <span class="prop-label">{{label_ppisp_activation_step}}</span>
-              <input type="text" class="number-input" data-value="ppisp_activation_step_str" />
-              <button class="num-step-btn" data-event-mousedown="num_step('ppisp_activation_step', -1)">-</button>
-              <button class="num-step-btn" data-event-mousedown="num_step('ppisp_activation_step', 1)">+</button>
-            </div>
+          <div class="setting-row" data-tooltip="training.tooltip.ppisp_activation_step">
+            <span class="prop-label">{{label_ppisp_activation_step}}</span>
+            <input type="text" class="number-input" data-value="ppisp_activation_step_str" />
+            <button class="num-step-btn" data-event-mousedown="num_step('ppisp_activation_step', -1)">-</button>
+            <button class="num-step-btn" data-event-mousedown="num_step('ppisp_activation_step', 1)">+</button>
           </div>
           <div class="setting-row" data-tooltip="training.tooltip.ppisp_controller_lr">
             <span class="prop-label">{{label_ppisp_controller_lr}}</span>

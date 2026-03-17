@@ -198,7 +198,7 @@
     "tooltip.ppisp_lr": "Taux d'apprentissage pour les paramètres PPISP",
     "tooltip.ppisp_reg": "Poids de régularisation pour les paramètres PPISP",
     "tooltip.ppisp_warmup": "Étapes avant le début de l'entraînement PPISP",
-    "tooltip.ppisp_activation_step": "Itération de début d'entraînement du contrôleur (-1 = auto: itérations - 5000)",
+    "tooltip.ppisp_activation_step": "Itération de début d'entraînement du contrôleur. Valeurs négatives : itérations - round(5000 * max(steps_scaler, 1)).",
     "tooltip.ppisp_controller_lr": "Taux d'apprentissage pour le réseau contrôleur",
     "tooltip.ppisp_freeze_gaussians": "Geler les paramètres Gaussiens pendant l'entraînement du contrôleur",
     "tooltip.strategy_gut_conflict": "Les stratégies ADC et igs+ ne sont pas disponibles lorsque GUT est activé",

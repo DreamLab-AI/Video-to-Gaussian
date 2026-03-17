@@ -189,7 +189,7 @@ namespace lfs::python {
                        "Enable PPISP controller for novel view synthesis")
             .int_prop(&OptimizationParameters::ppisp_controller_activation_step,
                       "ppisp_controller_activation_step", "Controller Step", -1, -1, 100000,
-                      "Iteration to start controller distillation (-1 = auto)")
+                      "Iteration to start controller distillation (negative = default schedule)")
             .float_prop(&OptimizationParameters::ppisp_controller_lr,
                         "ppisp_controller_lr", "Controller LR", 2e-3f, 1e-5f, 1e-1f,
                         "Learning rate for PPISP controller")
@@ -1132,7 +1132,7 @@ namespace lfs::python {
                 "ppisp_controller_activation_step",
                 [](PyOptimizationParams& self) { return self.params().ppisp_controller_activation_step; },
                 [](PyOptimizationParams& self, int v) { self.params().ppisp_controller_activation_step = v; },
-                "Iteration to start controller distillation (-1 = auto)")
+                "Iteration to start controller distillation (negative = default schedule)")
             .def_prop_rw(
                 "ppisp_controller_lr",
                 [](PyOptimizationParams& self) { return self.params().ppisp_controller_lr; },

@@ -641,9 +641,7 @@ namespace {
             return;
 
         if (opt.ppisp_controller_activation_step < 0) {
-            constexpr int CONTROLLER_TRAINING_ITERS = 5000;
-            opt.ppisp_controller_activation_step =
-                std::max(0, static_cast<int>(opt.iterations) - CONTROLLER_TRAINING_ITERS);
+            opt.ppisp_controller_activation_step = opt.resolved_ppisp_controller_activation_step();
         }
     }
 

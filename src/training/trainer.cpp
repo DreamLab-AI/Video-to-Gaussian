@@ -223,12 +223,11 @@ namespace lfs::training {
             PPISPControllerPool::Config config;
             config.lr = params_.optimization.ppisp_controller_lr;
 
+            const int activation_step = params_.optimization.resolved_ppisp_controller_activation_step();
             if (params_.optimization.ppisp_controller_activation_step < 0) {
-                params_.optimization.ppisp_controller_activation_step =
-                    std::max(0, static_cast<int>(params_.optimization.iterations) - 5000);
+                params_.optimization.ppisp_controller_activation_step = activation_step;
             }
-            int distillation_iters =
-                static_cast<int>(params_.optimization.iterations) - params_.optimization.ppisp_controller_activation_step;
+            int distillation_iters = static_cast<int>(params_.optimization.iterations) - activation_step;
             int num_cameras = ppisp_->num_cameras();
 
             ppisp_controller_pool_ = std::make_unique<PPISPControllerPool>(num_cameras, distillation_iters, config);
@@ -243,7 +242,7 @@ namespace lfs::training {
             ppisp_controller_pool_->allocate_buffers(max_h, max_w);
 
             LOG_INFO("PPISP controller pool initialized: num_cameras={}, activation_step={}, lr={:.2e}, max_image={}x{}",
-                     num_cameras, params_.optimization.ppisp_controller_activation_step,
+                     num_cameras, activation_step,
                      params_.optimization.ppisp_controller_lr, static_cast<int>(max_h), static_cast<int>(max_w));
 
             return {};
@@ -1205,10 +1204,11 @@ namespace lfs::training {
             // Determine controller phase before tile loop (does not depend on tile results)
             const bool known_ppisp_camera = ppisp_ && ppisp_->is_known_camera(cam->camera_id());
             const int ppisp_cam_idx = known_ppisp_camera ? ppisp_->camera_index(cam->camera_id()) : -1;
+            const int ppisp_activation_step = params_.optimization.resolved_ppisp_controller_activation_step();
             const bool in_controller_phase = ppisp_controller_pool_ && known_ppisp_camera &&
                                              params_.optimization.ppisp_use_controller &&
                                              params_.optimization.ppisp_freeze_gaussians_on_distill &&
-                                             iter >= params_.optimization.ppisp_controller_activation_step &&
+                                             iter >= ppisp_activation_step &&
                                              ppisp_cam_idx >= 0 &&
                                              ppisp_cam_idx < ppisp_controller_pool_->num_cameras();
             const bool use_pixel_error_densification =
@@ -1753,10 +1753,11 @@ namespace lfs::training {
                     }
 
                     // Skip strategy step if we're in controller distillation phase and freeze is enabled
+                    const int ppisp_activation_step = params_.optimization.resolved_ppisp_controller_activation_step();
                     const bool freeze_gaussians = ppisp_controller_pool_ &&
                                                   params_.optimization.ppisp_use_controller &&
                                                   params_.optimization.ppisp_freeze_gaussians_on_distill &&
-                                                  iter >= params_.optimization.ppisp_controller_activation_step;
+                                                  iter >= ppisp_activation_step;
                     if (!freeze_gaussians) {
                         strategy_->step(iter);
                     }
@@ -2116,7 +2117,8 @@ namespace lfs::training {
 
         // Only save controller if training has reached activation step
         PPISPControllerPool* controller_to_save = nullptr;
-        if (ppisp_controller_pool_ && iter_num >= params_.optimization.ppisp_controller_activation_step) {
+        if (ppisp_controller_pool_ &&
+            iter_num >= params_.optimization.resolved_ppisp_controller_activation_step()) {
             controller_to_save = ppisp_controller_pool_.get();
         }
 
@@ -2145,7 +2147,8 @@ namespace lfs::training {
 
         // Only save controller if training has reached activation step
         PPISPControllerPool* controller_to_save = nullptr;
-        if (ppisp_controller_pool_ && iteration >= params_.optimization.ppisp_controller_activation_step) {
+        if (ppisp_controller_pool_ &&
+            iteration >= params_.optimization.resolved_ppisp_controller_activation_step()) {
             controller_to_save = ppisp_controller_pool_.get();
         }
 
@@ -2160,7 +2163,8 @@ namespace lfs::training {
         }
 
         PPISPControllerPool* controller_to_save = nullptr;
-        if (ppisp_controller_pool_ && iteration >= params_.optimization.ppisp_controller_activation_step) {
+        if (ppisp_controller_pool_ &&
+            iteration >= params_.optimization.resolved_ppisp_controller_activation_step()) {
             controller_to_save = ppisp_controller_pool_.get();
         }
 

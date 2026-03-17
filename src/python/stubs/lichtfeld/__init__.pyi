@@ -1510,7 +1510,9 @@ class OptimizationParams:
 
     @property
     def ppisp_controller_activation_step(self) -> int:
-        """Iteration to start controller distillation (-1 = auto)"""
+        """
+        Iteration to start controller distillation (negative = default schedule)
+        """
 
     @ppisp_controller_activation_step.setter
     def ppisp_controller_activation_step(self, arg: int, /) -> None: ...

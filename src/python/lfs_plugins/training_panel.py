@@ -71,7 +71,6 @@ LOCALE_KEYS = {
     "mip_filter": "training_params.mip_filter",
     "ppisp": "training_params.ppisp",
     "ppisp_controller": "training_params.ppisp_controller",
-    "ppisp_auto": "common.auto",
     "ppisp_activation_step": "training_params.ppisp_activation_step",
     "ppisp_controller_lr": "training_params.ppisp_controller_lr",
     "ppisp_freeze_gaussians": "training_params.ppisp_freeze_gaussians",
@@ -133,7 +132,6 @@ LOCALE_KEYS = {
     "remove": "common.remove",
     "bg_browse": "training_params.bg_image_browse",
     "bg_clear": "training_params.bg_image_clear",
-    "auto": "common.auto",
     "strategy_mcmc": "training.options.strategy.mcmc",
     "strategy_adc": "training.options.strategy.adc",
     "strategy_igs_plus": "training.options.strategy.igs_plus",
@@ -244,6 +242,23 @@ def _parse_num(val_str, dtype):
     if not _FLOAT_INPUT_RE.fullmatch(value):
         raise ValueError(f"invalid numeric input: {val_str!r}")
     return value.replace(",", "")
+
+
+def _resolved_ppisp_activation_step(params):  # Must match OptimizationParameters::resolved_ppisp_controller_activation_step()
+    if params is None or not params.has_params():
+        return 0
+    scaler = max(float(getattr(params, "steps_scaler", 1.0)), 1.0)
+    iterations = int(getattr(params, "iterations", 0))
+    tail_iters = int(5000.0 * scaler + 0.5)
+    return max(0, iterations - tail_iters)
+
+
+def _display_ppisp_activation_step(params):
+    if params is None or not params.has_params():
+        return 0
+    step = int(getattr(params, "ppisp_controller_activation_step", -1))
+    return step if step >= 0 else _resolved_ppisp_activation_step(params)
+
 
 SLIDER_PROPS = ["lambda_dssim", "init_opacity", "prune_ratio"]
 
@@ -417,9 +432,6 @@ class TrainingPanel(Panel):
                          lambda: p() is not None and p().has_params() and p().ppisp)
         model.bind_func("dep_ppisp_controller",
                          lambda: p() is not None and p().has_params() and p().ppisp_use_controller)
-        model.bind_func("dep_ppisp_manual_step",
-                         lambda: p() is not None and p().has_params() and
-                                 p().ppisp_controller_activation_step >= 0)
         model.bind_func("dep_bg_color",
                          lambda: p() is not None and p().has_params() and p().bg_mode.value in (0, 1))
         model.bind_func("dep_bg_image",
@@ -485,11 +497,6 @@ class TrainingPanel(Panel):
                        lambda pr=prop: getattr(p(), pr, False) if p() and p().has_params() else False,
                        lambda v, pr=prop: self._set_bool_prop(pr, v))
 
-        model.bind("ppisp_auto_step",
-                    lambda: p() is not None and p().has_params() and
-                            p().ppisp_controller_activation_step < 0,
-                    lambda v: self._set_ppisp_auto_step(v))
-
     def _bind_dataset_bools(self, model, d):
         def _set_dataset_bool(v, pr):
             dp = d()
@@ -543,8 +550,8 @@ class TrainingPanel(Panel):
         def ppisp_activation_step_getter():
             if self._text_bufs["ppisp_activation_step_str"] is None:
                 self._text_bufs["ppisp_activation_step_str"] = (
-                    f"{p().ppisp_controller_activation_step:,}"
-                    if p() and p().has_params() and p().ppisp_controller_activation_step >= 0
+                    f"{_display_ppisp_activation_step(p()):,}"
+                    if p() and p().has_params()
                     else ""
                 )
             return self._text_bufs["ppisp_activation_step_str"]
@@ -600,8 +607,8 @@ class TrainingPanel(Panel):
                 return _fmt_num(getattr(p, prop, 0), dtype, fmt) if p and p.has_params() else ""
 
         if key == "ppisp_activation_step_str":
-            if p and p.has_params() and p.ppisp_controller_activation_step >= 0:
-                return f"{p.ppisp_controller_activation_step:,}"
+            if p and p.has_params():
+                return f"{_display_ppisp_activation_step(p):,}"
             return ""
 
         if key == "max_width_str":
@@ -641,8 +648,7 @@ class TrainingPanel(Panel):
             key = f"{prop}_str"
             self._text_bufs[key] = _fmt_num(getattr(p, prop, 0), dtype, fmt) if p and p.has_params() else ""
         if p and p.has_params():
-            step = p.ppisp_controller_activation_step
-            self._text_bufs["ppisp_activation_step_str"] = f"{step:,}" if step >= 0 else ""
+            self._text_bufs["ppisp_activation_step_str"] = f"{_display_ppisp_activation_step(p):,}"
         else:
             self._text_bufs["ppisp_activation_step_str"] = ""
         self._text_bufs["max_width_str"] = f"{d.max_width:,}" if d and d.has_params() else ""
@@ -958,18 +964,6 @@ class TrainingPanel(Panel):
             self._sync_text_bufs()
             self._handle.dirty_all()
 
-    def _set_ppisp_auto_step(self, val):
-        params = lf.optimization_params()
-        if not params or not params.has_params():
-            return
-        if val:
-            params.ppisp_controller_activation_step = -1
-        else:
-            params.ppisp_controller_activation_step = max(1, int(params.iterations) - 5000)
-        if self._handle:
-            self._sync_text_bufs()
-            self._handle.dirty_all()
-
     def _set_strategy(self, val):
         params = lf.optimization_params()
         if not params or not params.has_params():
@@ -1180,9 +1174,7 @@ class TrainingPanel(Panel):
             params = lf.optimization_params()
             if not params or not params.has_params():
                 return
-            current = params.ppisp_controller_activation_step
-            if current < 0:
-                return
+            current = _display_ppisp_activation_step(params)
             new_val = max(1, current + 100 * direction)
             params.ppisp_controller_activation_step = new_val
             self._text_bufs["ppisp_activation_step_str"] = f"{new_val:,}"

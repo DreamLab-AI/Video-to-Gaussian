@@ -198,7 +198,7 @@
     "tooltip.ppisp_lr": "PPISPパラメータの学習率",
     "tooltip.ppisp_reg": "PPISPパラメータの正則化重み",
     "tooltip.ppisp_warmup": "PPISPトレーニング開始前のステップ",
-    "tooltip.ppisp_activation_step": "コントローラートレーニング開始イテレーション（-1 = 自動: イテレーション - 5000）",
+    "tooltip.ppisp_activation_step": "コントローラートレーニング開始イテレーション。負の値: イテレーション - round(5000 * max(steps_scaler, 1))。",
     "tooltip.ppisp_controller_lr": "コントローラーネットワークの学習率",
     "tooltip.ppisp_freeze_gaussians": "コントローラートレーニング中にガウシアンパラメータを固定",
     "tooltip.strategy_gut_conflict": "GUTが有効の場合、ADCおよびigs+戦略は使用できません",
