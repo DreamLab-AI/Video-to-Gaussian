@@ -30,8 +30,8 @@
 #include "strategies/adc.hpp"
 #include "strategies/mcmc.hpp"
 #include "strategies/strategy_factory.hpp"
-#include "training/kernels/lfs_kernels.hpp"
 #include "training/kernels/grad_alpha.hpp"
+#include "training/kernels/lfs_kernels.hpp"
 
 #include <filesystem>
 #include <fstream>

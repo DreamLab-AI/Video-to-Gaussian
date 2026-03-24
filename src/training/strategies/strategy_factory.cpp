@@ -4,9 +4,9 @@
 
 #include "strategy_factory.hpp"
 #include "adc.hpp"
-#include "lfs.hpp"
 #include "core/logger.hpp"
 #include "improved_gs_plus.hpp"
+#include "lfs.hpp"
 #include "mcmc.hpp"
 #include <format>
 #include <mutex>

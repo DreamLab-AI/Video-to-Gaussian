@@ -5,13 +5,13 @@
 #include "lfs.hpp"
 #include "core/logger.hpp"
 #include "edge_rasterizer.hpp"
+#include "io/pipelined_image_loader.hpp"
 #include "kernels/densification_kernels.hpp"
 #include "kernels/image_kernels.hpp"
 #include "kernels/lfs_kernels.hpp"
 #include "kernels/mcmc_kernels.hpp"
 #include "strategy_utils.hpp"
 #include "training/dataset.hpp"
-#include "io/pipelined_image_loader.hpp"
 #include <algorithm>
 #include <cassert>
 #include <chrono>
