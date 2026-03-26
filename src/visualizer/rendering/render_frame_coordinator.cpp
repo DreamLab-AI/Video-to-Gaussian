@@ -76,16 +76,40 @@ namespace lfs::vis {
             dependencies_.pass_graph.resetPointCloudCache();
         }
 
-        dependencies_.viewport_interaction_context.viewport_data = lfs::rendering::ViewportData{
+        lfs::rendering::ViewportData primary_viewport_data = {
             .rotation = context.viewport.getRotationMatrix(),
             .translation = context.viewport.getTranslation(),
             .size = render_size,
             .focal_length_mm = context.settings.focal_length_mm,
             .orthographic = context.settings.orthographic,
             .ortho_scale = context.settings.ortho_scale};
+        std::optional<lfs::rendering::ViewportData> secondary_viewport_data;
+        const bool independent_split_active =
+            context.settings.split_view_mode == SplitViewMode::IndependentDual &&
+            context.secondary_viewport &&
+            render_size.x > 1 &&
+            render_size.y > 0;
+        if (independent_split_active) {
+            const auto layouts = makeSplitViewPanelLayouts(render_size.x, context.settings.split_position);
+            primary_viewport_data.size = {std::max(layouts[0].width, 1), render_size.y};
+            secondary_viewport_data = lfs::rendering::ViewportData{
+                .rotation = context.secondary_viewport->getRotationMatrix(),
+                .translation = context.secondary_viewport->getTranslation(),
+                .size = {std::max(layouts[1].width, 1), render_size.y},
+                .focal_length_mm = context.settings.focal_length_mm,
+                .orthographic = context.settings.orthographic,
+                .ortho_scale = context.settings.ortho_scale};
+        }
+        dependencies_.viewport_interaction_context.updatePickContext(
+            context.viewport_region,
+            primary_viewport_data,
+            secondary_viewport_data ? &*secondary_viewport_data : nullptr,
+            independent_split_active,
+            context.settings.split_position);
 
         const FrameContext frame_ctx{
             .viewport = context.viewport,
+            .secondary_viewport = context.secondary_viewport,
             .viewport_region = context.viewport_region,
             .render_lock_held = context.render_lock_held,
             .scene_manager = context.scene_manager,

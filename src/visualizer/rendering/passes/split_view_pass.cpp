@@ -13,8 +13,12 @@ namespace lfs::vis {
     namespace {
         [[nodiscard]] lfs::rendering::SplitViewPanelContent buildModelPanelContent(
             const FrameContext& ctx,
+            const Viewport& viewport,
+            const glm::ivec2 render_size,
             const lfs::core::SplatData& model,
-            const glm::mat4& model_transform) {
+            const glm::mat4& model_transform,
+            const bool use_full_scene,
+            const std::optional<SplitViewPanelId> render_panel = std::nullopt) {
             lfs::rendering::SplitViewPanelContent content{
                 .type = lfs::rendering::PanelContentType::Model3D,
                 .model = &model,
@@ -24,11 +28,19 @@ namespace lfs::vis {
                 .texture_id = 0};
 
             if (ctx.settings.point_cloud_mode) {
-                content.point_cloud_render = buildSplitViewPointCloudPanelRenderState(ctx, ctx.render_size);
+                content.point_cloud_render =
+                    buildSplitViewPointCloudPanelRenderState(ctx, render_size, &viewport);
+                if (!use_full_scene) {
+                    content.point_cloud_render->scene = {};
+                }
                 return content;
             }
 
-            content.gaussian_render = buildSplitViewGaussianPanelRenderState(ctx, ctx.render_size);
+            content.gaussian_render =
+                buildSplitViewGaussianPanelRenderState(ctx, render_size, &viewport, render_panel);
+            if (!use_full_scene) {
+                content.gaussian_render->scene = {};
+            }
             return content;
         }
     } // namespace
@@ -162,8 +174,12 @@ namespace lfs::vis {
                         .content =
                             buildModelPanelContent(
                                 ctx,
+                                ctx.viewport,
+                                ctx.render_size,
                                 *visible_nodes[left_idx]->model,
-                                scene.getWorldTransform(visible_nodes[left_idx]->id)),
+                                scene.getWorldTransform(visible_nodes[left_idx]->id),
+                                false,
+                                std::nullopt),
                         .presentation =
                             {.start_position = 0.0f,
                              .end_position = settings.split_position,
@@ -173,14 +189,69 @@ namespace lfs::vis {
                         .content =
                             buildModelPanelContent(
                                 ctx,
+                                ctx.viewport,
+                                ctx.render_size,
                                 *visible_nodes[right_idx]->model,
-                                scene.getWorldTransform(visible_nodes[right_idx]->id)),
+                                scene.getWorldTransform(visible_nodes[right_idx]->id),
+                                false,
+                                std::nullopt),
                         .presentation =
                             {.start_position = settings.split_position,
                              .end_position = 1.0f,
                              .texcoord_scale = texcoord_scale,
                              .flip_y = std::nullopt}}},
                 .composite = {.output_size = viewport_data.size, .background_color = settings.background_color},
+                .presentation = {.divider_color = glm::vec4(1.0f, 0.85f, 0.0f, 1.0f)}};
+        }
+
+        if (settings.split_view_mode == SplitViewMode::IndependentDual) {
+            if (!ctx.model || !ctx.secondary_viewport || ctx.render_size.x <= 1 || ctx.render_size.y <= 0) {
+                return std::nullopt;
+            }
+
+            const auto layouts = makeSplitViewPanelLayouts(ctx.render_size.x, settings.split_position);
+            const glm::ivec2 left_size(layouts[0].width, ctx.render_size.y);
+            const glm::ivec2 right_size(layouts[1].width, ctx.render_size.y);
+            if (left_size.x <= 0 || right_size.x <= 0) {
+                return std::nullopt;
+            }
+
+            split_info.left_name = "Primary View";
+            split_info.right_name = "Secondary View";
+
+            return lfs::rendering::SplitViewRequest{
+                .panels = std::array<lfs::rendering::SplitViewPanel, 2>{
+                    lfs::rendering::SplitViewPanel{
+                        .content = buildModelPanelContent(
+                            ctx,
+                            ctx.viewport,
+                            left_size,
+                            *ctx.model,
+                            glm::mat4(1.0f),
+                            true,
+                            SplitViewPanelId::Left),
+                        .presentation =
+                            {.start_position = layouts[0].start_position,
+                             .end_position = layouts[0].end_position,
+                             .texcoord_scale = glm::vec2(1.0f, 1.0f),
+                             .flip_y = std::nullopt,
+                             .normalize_x_to_panel = true}},
+                    lfs::rendering::SplitViewPanel{
+                        .content = buildModelPanelContent(
+                            ctx,
+                            *ctx.secondary_viewport,
+                            right_size,
+                            *ctx.model,
+                            glm::mat4(1.0f),
+                            true,
+                            SplitViewPanelId::Right),
+                        .presentation =
+                            {.start_position = layouts[1].start_position,
+                             .end_position = layouts[1].end_position,
+                             .texcoord_scale = glm::vec2(1.0f, 1.0f),
+                             .flip_y = std::nullopt,
+                             .normalize_x_to_panel = true}}},
+                .composite = {.output_size = ctx.render_size, .background_color = settings.background_color},
                 .presentation = {.divider_color = glm::vec4(1.0f, 0.85f, 0.0f, 1.0f)}};
         }
 

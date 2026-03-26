@@ -143,6 +143,9 @@ namespace lfs::vis {
              .render_count = render_count_}};
         const auto frame_result = frame_coordinator.execute(
             {.viewport = context.viewport,
+             .secondary_viewport = settings_.split_view_mode == SplitViewMode::IndependentDual
+                                       ? &split_view_service_.secondaryViewport()
+                                       : nullptr,
              .viewport_region = context.viewport_region,
              .scene_manager = scene_manager,
              .model = model,
@@ -168,8 +171,6 @@ namespace lfs::vis {
         }
 
         viewport_interaction_context_.scene_manager = scene_manager;
-        viewport_interaction_context_.updatePickContext(context.viewport_region,
-                                                        viewport_interaction_context_.viewport_data);
     }
 
 } // namespace lfs::vis

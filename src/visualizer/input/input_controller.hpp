@@ -10,10 +10,12 @@
 #include "input/input_bindings.hpp"
 #include "input/input_types.hpp"
 #include "internal/viewport.hpp"
+#include "rendering/rendering_types.hpp"
 #include <chrono>
 #include <cstddef>
 #include <glm/glm.hpp>
 #include <memory>
+#include <optional>
 
 struct SDL_Window;
 struct SDL_Cursor;
@@ -64,6 +66,10 @@ namespace lfs::vis {
             viewport_bounds_ = {x, y, w, h};
         }
 
+        void setFocusedSplitPanel(const SplitViewPanelId panel) {
+            focusSplitPanel(panel);
+        }
+
         // Set special input modes
         void setPointCloudMode(bool enabled) {
             point_cloud_mode_ = enabled;
@@ -104,8 +110,19 @@ namespace lfs::vis {
         void onWindowFocusLost();
 
     private:
+        struct PanelInteractionState {
+            SplitViewPanelId panel = SplitViewPanelId::Left;
+            Viewport* viewport = nullptr;
+            float local_x = 0.0f;
+            float local_y = 0.0f;
+            float width = 0.0f;
+            float height = 0.0f;
+
+            [[nodiscard]] bool valid() const { return viewport != nullptr && width > 0.0f && height > 0.0f; }
+        };
+
         void handleGoToCamView(const lfs::core::events::cmd::GoToCamView& event);
-        void handleFocusSelection();
+        void handleFocusSelection(Viewport& target_viewport);
 
         // WASD processing with proper frame timing
         void processWASDMovement();
@@ -118,11 +135,17 @@ namespace lfs::vis {
         void selectCameraByUid(int uid);
         void updateCameraSpeed(bool increase);
         void updateZoomSpeed(bool increase);
-        void publishCameraMove();
+        void publishCameraMove(Viewport* target_viewport = nullptr);
         bool isNearSplitter(double x) const;
         int getModifierKeys() const;
         bool isKeyPressed(int app_key) const;
         bool isMouseButtonPressed(int app_button) const;
+        [[nodiscard]] bool isIndependentSplitViewActive() const;
+        [[nodiscard]] SplitViewPanelId splitPanelForScreenX(double x) const;
+        [[nodiscard]] std::optional<PanelInteractionState> resolvePanelInteraction(double x, double y) const;
+        void focusSplitPanel(SplitViewPanelId panel);
+        [[nodiscard]] Viewport& activeKeyboardViewport();
+        [[nodiscard]] const Viewport& activeKeyboardViewport() const;
         glm::vec3 unprojectScreenPoint(double x, double y, float fallback_distance = 5.0f) const;
         std::pair<glm::vec3, glm::vec3> computePickRay(double x, double y) const;
         input::ToolMode getCurrentToolMode() const;
@@ -165,6 +188,10 @@ namespace lfs::vis {
         glm::dvec2 last_mouse_pos_{0, 0};
         float splitter_start_pos_ = 0.5f;
         double splitter_start_x_ = 0.0;
+        Viewport* drag_viewport_ = nullptr;
+        SplitViewPanelId drag_split_panel_ = SplitViewPanelId::Left;
+        SplitViewPanelId focused_split_panel_ = SplitViewPanelId::Left;
+        SplitViewPanelId node_rect_panel_ = SplitViewPanelId::Left;
 
         // Key states
         bool key_r_pressed_ = false;

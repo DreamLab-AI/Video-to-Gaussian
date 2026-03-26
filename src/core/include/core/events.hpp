@@ -12,6 +12,8 @@
 #include <string>
 #include <unordered_map>
 
+class Viewport;
+
 namespace lfs::core {
 
     // Forward declarations
@@ -94,6 +96,7 @@ namespace lfs::core {
             EVENT(CyclePLY, );
             EVENT(CycleSelectionVisualization, );
             EVENT(ToggleSplitView, );
+            EVENT(ToggleIndependentSplitView, const Viewport* viewport;);
             EVENT(ToggleGTComparison, );
             EVENT(Undo, );
             EVENT(Redo, );

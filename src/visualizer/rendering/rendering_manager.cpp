@@ -148,11 +148,26 @@ namespace lfs::vis {
         return split_view_service_.getInfo();
     }
 
+    bool RenderingManager::isIndependentSplitViewActive() const {
+        std::lock_guard<std::mutex> lock(settings_mutex_);
+        return settings_.split_view_mode == SplitViewMode::IndependentDual;
+    }
+
+    const Viewport* RenderingManager::getIndependentSplitViewportOrNull() const {
+        std::lock_guard<std::mutex> lock(settings_mutex_);
+        if (settings_.split_view_mode != SplitViewMode::IndependentDual) {
+            return nullptr;
+        }
+        return &split_view_service_.secondaryViewport();
+    }
+
     void RenderingManager::setCursorPreviewState(const bool active, const float x, const float y, const float radius,
                                                  const bool add_mode, lfs::core::Tensor* selection_tensor,
-                                                 const bool saturation_mode, const float saturation_amount) {
+                                                 const bool saturation_mode, const float saturation_amount,
+                                                 const std::optional<SplitViewPanelId> panel,
+                                                 const int focused_gaussian_id) {
         viewport_overlay_service_.setCursorPreview(active, x, y, radius, add_mode, selection_tensor,
-                                                   saturation_mode, saturation_amount);
+                                                   saturation_mode, saturation_amount, panel, focused_gaussian_id);
         markDirty(DirtyFlag::SELECTION);
     }
 
@@ -161,29 +176,33 @@ namespace lfs::vis {
         markDirty(DirtyFlag::SELECTION);
     }
 
-    void RenderingManager::setRectPreview(float x0, float y0, float x1, float y1, bool add_mode) {
-        viewport_overlay_service_.setRect(x0, y0, x1, y1, add_mode);
+    void RenderingManager::setRectPreview(float x0, float y0, float x1, float y1, bool add_mode,
+                                          const std::optional<SplitViewPanelId> panel) {
+        viewport_overlay_service_.setRect(x0, y0, x1, y1, add_mode, panel);
     }
 
     void RenderingManager::clearRectPreview() {
         viewport_overlay_service_.clearRect();
     }
 
-    void RenderingManager::setPolygonPreview(const std::vector<std::pair<float, float>>& points, bool closed, bool add_mode) {
-        viewport_overlay_service_.setPolygon(points, closed, add_mode);
+    void RenderingManager::setPolygonPreview(const std::vector<std::pair<float, float>>& points, bool closed,
+                                             bool add_mode, const std::optional<SplitViewPanelId> panel) {
+        viewport_overlay_service_.setPolygon(points, closed, add_mode, panel);
     }
 
     void RenderingManager::setPolygonPreviewWorldSpace(const std::vector<glm::vec3>& world_points,
-                                                       const bool closed, const bool add_mode) {
-        viewport_overlay_service_.setPolygonWorldSpace(world_points, closed, add_mode);
+                                                       const bool closed, const bool add_mode,
+                                                       const std::optional<SplitViewPanelId> panel) {
+        viewport_overlay_service_.setPolygonWorldSpace(world_points, closed, add_mode, panel);
     }
 
     void RenderingManager::clearPolygonPreview() {
         viewport_overlay_service_.clearPolygon();
     }
 
-    void RenderingManager::setLassoPreview(const std::vector<std::pair<float, float>>& points, bool add_mode) {
-        viewport_overlay_service_.setLasso(points, add_mode);
+    void RenderingManager::setLassoPreview(const std::vector<std::pair<float, float>>& points, bool add_mode,
+                                           const std::optional<SplitViewPanelId> panel) {
+        viewport_overlay_service_.setLasso(points, add_mode, panel);
     }
 
     void RenderingManager::clearLassoPreview() {

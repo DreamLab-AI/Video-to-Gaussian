@@ -233,6 +233,7 @@ namespace lfs::rendering {
         int sh_degree = 3;
         bool gut = false;
         bool equirectangular = false;
+        GaussianSceneState scene;
         GaussianFilterState filters;
         GaussianOverlayState overlay;
     };
@@ -240,6 +241,7 @@ namespace lfs::rendering {
     struct SplitViewPointCloudPanelRenderState {
         FrameView frame_view;
         PointCloudRenderState render;
+        PointCloudSceneState scene;
         PointCloudFilterState filters;
     };
 
@@ -257,6 +259,7 @@ namespace lfs::rendering {
         float end_position = 1.0f;
         glm::vec2 texcoord_scale{1.0f, 1.0f};
         std::optional<bool> flip_y;
+        bool normalize_x_to_panel = false;
     };
 
     struct SplitViewPanel {

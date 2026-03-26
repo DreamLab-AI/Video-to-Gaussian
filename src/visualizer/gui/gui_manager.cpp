@@ -1205,6 +1205,31 @@ namespace lfs::vis::gui {
         gizmo_manager_.updateToolState(ctx, ui_hidden_);
         gizmo_manager_.updateCropFlash();
 
+        float primary_toolbar_x = 0.0f;
+        float primary_toolbar_width = viewport_layout_.size.x;
+        bool show_secondary_toolbar = false;
+        float secondary_toolbar_x = 0.0f;
+        float secondary_toolbar_width = 0.0f;
+        if (auto* const rendering = viewer_ ? viewer_->getRenderingManager() : nullptr;
+            rendering && rendering->isIndependentSplitViewActive()) {
+            if (const auto primary_panel = rendering->resolveViewerPanel(
+                    viewport_layout_.pos, viewport_layout_.size, std::nullopt, SplitViewPanelId::Left)) {
+                primary_toolbar_x = primary_panel->x - viewport_layout_.pos.x;
+                primary_toolbar_width = primary_panel->width;
+            }
+            if (const auto secondary_panel = rendering->resolveViewerPanel(
+                    viewport_layout_.pos, viewport_layout_.size, std::nullopt, SplitViewPanelId::Right)) {
+                show_secondary_toolbar = secondary_panel->valid();
+                secondary_toolbar_x = secondary_panel->x - viewport_layout_.pos.x;
+                secondary_toolbar_width = secondary_panel->width;
+            }
+        }
+
+        rml_viewport_overlay_.setToolbarPanels(primary_toolbar_x,
+                                               primary_toolbar_width,
+                                               show_secondary_toolbar,
+                                               secondary_toolbar_x,
+                                               secondary_toolbar_width);
         rml_viewport_overlay_.setViewportBounds(
             viewport_layout_.pos, viewport_layout_.size,
             {panel_input.screen_x, panel_input.screen_y});
@@ -1215,6 +1240,21 @@ namespace lfs::vis::gui {
             focus.want_capture_keyboard = true;
         }
         rml_viewport_overlay_.processInput(panel_input);
+        if (rml_viewport_overlay_.wantsInput() && panel_input.mouse_clicked[0]) {
+            if (auto* const rendering = viewer_ ? viewer_->getRenderingManager() : nullptr;
+                rendering && rendering->isIndependentSplitViewActive()) {
+                if (const auto target_panel = rendering->resolveViewerPanel(
+                        viewport_layout_.pos,
+                        viewport_layout_.size,
+                        glm::vec2(panel_input.mouse_x, panel_input.mouse_y))) {
+                    if (auto* const input_controller = viewer_->getInputController()) {
+                        input_controller->setFocusedSplitPanel(target_panel->panel);
+                    } else {
+                        rendering->setFocusedSplitPanel(target_panel->panel);
+                    }
+                }
+            }
+        }
         if (lfs::python::has_python_hooks("viewport_overlay", "draw")) {
             lfs::python::invoke_python_hooks("viewport_overlay", "draw", true);
             lfs::python::invoke_python_hooks("viewport_overlay", "draw", false);
@@ -1332,17 +1372,62 @@ namespace lfs::vis::gui {
             auto* rm = ctx.viewer->getRenderingManager();
             auto* draw_list = ImGui::GetForegroundDrawList();
             const glm::ivec2 rendered_size = rm ? rm->getRenderedSize() : glm::ivec2(0);
-            const float render_to_screen_x =
-                (rendered_size.x > 0)
-                    ? (viewport_layout_.size.x / static_cast<float>(rendered_size.x))
-                    : (1.0f / std::max(rm ? rm->getSettings().render_scale : 1.0f, 0.001f));
-            const float render_to_screen_y =
-                (rendered_size.y > 0)
-                    ? (viewport_layout_.size.y / static_cast<float>(rendered_size.y))
-                    : (1.0f / std::max(rm ? rm->getSettings().render_scale : 1.0f, 0.001f));
-            const auto render_to_screen = [&](const float x, const float y) {
-                return ImVec2(viewport_layout_.pos.x + x * render_to_screen_x,
-                              viewport_layout_.pos.y + y * render_to_screen_y);
+            struct PreviewPanelContext {
+                float x = 0.0f;
+                float y = 0.0f;
+                float width = 0.0f;
+                float height = 0.0f;
+                int render_width = 0;
+                int render_height = 0;
+                const Viewport* viewport = nullptr;
+            };
+            const auto resolve_preview_panel = [&](const std::optional<SplitViewPanelId> panel) {
+                PreviewPanelContext panel_ctx{
+                    .x = viewport_layout_.pos.x,
+                    .y = viewport_layout_.pos.y,
+                    .width = viewport_layout_.size.x,
+                    .height = viewport_layout_.size.y,
+                    .render_width =
+                        rendered_size.x > 0 ? rendered_size.x : static_cast<int>(ctx.viewer->getViewport().windowSize.x),
+                    .render_height =
+                        rendered_size.y > 0 ? rendered_size.y : static_cast<int>(ctx.viewer->getViewport().windowSize.y),
+                    .viewport = &ctx.viewer->getViewport(),
+                };
+                if (!rm || !panel || !rm->isIndependentSplitViewActive()) {
+                    return panel_ctx;
+                }
+
+                const auto info = rm->resolveViewerPanel(
+                    {viewport_layout_.pos.x, viewport_layout_.pos.y},
+                    {viewport_layout_.size.x, viewport_layout_.size.y},
+                    std::nullopt,
+                    panel);
+                if (!info) {
+                    return panel_ctx;
+                }
+
+                panel_ctx.x = info->x;
+                panel_ctx.y = info->y;
+                panel_ctx.width = info->width;
+                panel_ctx.height = info->height;
+                panel_ctx.render_width = info->render_width;
+                panel_ctx.render_height = info->render_height;
+                if (*panel == SplitViewPanelId::Right) {
+                    panel_ctx.viewport = rm->getIndependentSplitViewportOrNull();
+                }
+                return panel_ctx;
+            };
+            const auto render_to_screen = [&](const PreviewPanelContext& panel_ctx, const float x, const float y) {
+                const float render_to_screen_x =
+                    (panel_ctx.render_width > 0)
+                        ? (panel_ctx.width / static_cast<float>(panel_ctx.render_width))
+                        : (1.0f / std::max(rm ? rm->getSettings().render_scale : 1.0f, 0.001f));
+                const float render_to_screen_y =
+                    (panel_ctx.render_height > 0)
+                        ? (panel_ctx.height / static_cast<float>(panel_ctx.render_height))
+                        : (1.0f / std::max(rm ? rm->getSettings().render_scale : 1.0f, 0.001f));
+                return ImVec2(panel_ctx.x + x * render_to_screen_x,
+                              panel_ctx.y + y * render_to_screen_y);
             };
 
             if (rm && rm->isCursorPreviewActive()) {
@@ -1350,9 +1435,13 @@ namespace lfs::vis::gui {
                 float bx, by, br;
                 bool add_mode;
                 rm->getCursorPreviewState(bx, by, br, add_mode);
+                const auto panel_ctx = resolve_preview_panel(rm->getCursorPreviewPanel());
 
-                const ImVec2 screen_pos = render_to_screen(bx, by);
-                const float screen_radius = br * render_to_screen_x;
+                const ImVec2 screen_pos = render_to_screen(panel_ctx, bx, by);
+                const float screen_radius =
+                    (panel_ctx.render_width > 0)
+                        ? br * (panel_ctx.width / static_cast<float>(panel_ctx.render_width))
+                        : br;
 
                 const ImU32 brush_color = add_mode
                                               ? toU32WithAlpha(t.palette.success, 0.8f)
@@ -1366,9 +1455,10 @@ namespace lfs::vis::gui {
                 float rx0, ry0, rx1, ry1;
                 bool add_mode;
                 rm->getRectPreview(rx0, ry0, rx1, ry1, add_mode);
+                const auto panel_ctx = resolve_preview_panel(rm->getRectPreviewPanel());
 
-                const ImVec2 p0 = render_to_screen(rx0, ry0);
-                const ImVec2 p1 = render_to_screen(rx1, ry1);
+                const ImVec2 p0 = render_to_screen(panel_ctx, rx0, ry0);
+                const ImVec2 p1 = render_to_screen(panel_ctx, rx1, ry1);
 
                 const ImU32 fill_color = add_mode
                                              ? toU32WithAlpha(t.palette.success, 0.15f)
@@ -1387,6 +1477,7 @@ namespace lfs::vis::gui {
                 const auto& world_points = rm->getPolygonWorldPoints();
                 const bool closed = rm->isPolygonClosed();
                 const bool add_mode = rm->isPolygonAddMode();
+                const auto panel_ctx = resolve_preview_panel(rm->getPolygonPreviewPanel());
 
                 if (!points.empty() || !world_points.empty()) {
                     const ImU32 line_color = add_mode
@@ -1406,9 +1497,15 @@ namespace lfs::vis::gui {
                     if (rm->isPolygonPreviewWorldSpace()) {
                         screen_points.reserve(world_points.size());
 
-                        const auto& viewport = ctx.viewer->getViewport();
+                        if (!panel_ctx.viewport) {
+                            screen_points.clear();
+                        }
+                        Viewport projection_viewport = panel_ctx.viewport ? *panel_ctx.viewport : ctx.viewer->getViewport();
+                        projection_viewport.windowSize = {std::max(panel_ctx.render_width, 1),
+                                                          std::max(panel_ctx.render_height, 1)};
                         const glm::mat4 vp_matrix =
-                            viewport.getProjectionMatrix(rm->getFocalLengthMm()) * viewport.getViewMatrix();
+                            projection_viewport.getProjectionMatrix(rm->getFocalLengthMm()) *
+                            projection_viewport.getViewMatrix();
 
                         bool all_visible = true;
                         for (const auto& world_point : world_points) {
@@ -1420,8 +1517,8 @@ namespace lfs::vis::gui {
 
                             const glm::vec3 ndc = glm::vec3(clip) / clip.w;
                             screen_points.emplace_back(
-                                viewport_layout_.pos.x + (ndc.x * 0.5f + 0.5f) * viewport_layout_.size.x,
-                                viewport_layout_.pos.y + (1.0f - (ndc.y * 0.5f + 0.5f)) * viewport_layout_.size.y);
+                                panel_ctx.x + (ndc.x * 0.5f + 0.5f) * panel_ctx.width,
+                                panel_ctx.y + (1.0f - (ndc.y * 0.5f + 0.5f)) * panel_ctx.height);
                         }
 
                         if (!all_visible) {
@@ -1430,19 +1527,19 @@ namespace lfs::vis::gui {
                     } else {
                         screen_points.reserve(points.size());
                         for (const auto& [px, py] : points) {
-                            screen_points.push_back(render_to_screen(px, py));
+                            screen_points.push_back(render_to_screen(panel_ctx, px, py));
                         }
                     }
 
-                    const ImVec2 clip_min(viewport_layout_.pos.x, viewport_layout_.pos.y);
-                    float clip_bottom = viewport_layout_.pos.y + viewport_layout_.size.y;
+                    const ImVec2 clip_min(panel_ctx.x, panel_ctx.y);
+                    float clip_bottom = panel_ctx.y + panel_ctx.height;
                     if (panel_layout_.isShowSequencer()) {
                         const float seq_top = sequencer_ui_.panelTopY();
                         if (seq_top > 0.0f) {
                             clip_bottom = std::min(clip_bottom, seq_top);
                         }
                     }
-                    const ImVec2 clip_max(viewport_layout_.pos.x + viewport_layout_.size.x, clip_bottom);
+                    const ImVec2 clip_max(panel_ctx.x + panel_ctx.width, clip_bottom);
                     draw_list->PushClipRect(clip_min, clip_max, true);
 
                     if (closed && screen_points.size() >= 3) {
@@ -1525,15 +1622,16 @@ namespace lfs::vis::gui {
                 const auto& t = theme();
                 const auto& points = rm->getLassoPoints();
                 const bool add_mode = rm->isLassoAddMode();
+                const auto panel_ctx = resolve_preview_panel(rm->getLassoPreviewPanel());
 
                 if (points.size() >= 2) {
                     const ImU32 line_color = add_mode
                                                  ? toU32WithAlpha(t.palette.success, 0.8f)
                                                  : toU32WithAlpha(t.palette.error, 0.8f);
 
-                    ImVec2 prev = render_to_screen(points[0].first, points[0].second);
+                    ImVec2 prev = render_to_screen(panel_ctx, points[0].first, points[0].second);
                     for (size_t i = 1; i < points.size(); ++i) {
-                        ImVec2 curr = render_to_screen(points[i].first, points[i].second);
+                        ImVec2 curr = render_to_screen(panel_ctx, points[i].first, points[i].second);
                         draw_list->AddLine(prev, curr, line_color, 2.0f);
                         prev = curr;
                     }

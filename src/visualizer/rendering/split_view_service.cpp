@@ -25,6 +25,7 @@ namespace lfs::vis {
     void SplitViewService::clear() {
         clearGTContext();
         pre_gt_equirectangular_ = false;
+        focused_panel_ = SplitViewPanelId::Left;
         std::lock_guard<std::mutex> lock(info_mutex_);
         current_info_ = {};
     }
@@ -37,6 +38,16 @@ namespace lfs::vis {
         const bool enabled = settings.split_view_mode != SplitViewMode::PLYComparison;
         settings.split_view_mode = enabled ? SplitViewMode::PLYComparison : SplitViewMode::Disabled;
         settings.split_view_offset = 0;
+        return enabled;
+    }
+
+    bool SplitViewService::toggleIndependentDual(RenderSettings& settings, const Viewport& primary_viewport) {
+        const bool enabled = settings.split_view_mode != SplitViewMode::IndependentDual;
+        settings.split_view_mode = enabled ? SplitViewMode::IndependentDual : SplitViewMode::Disabled;
+        if (enabled) {
+            secondary_viewport_ = primary_viewport;
+        }
+        focused_panel_ = SplitViewPanelId::Left;
         return enabled;
     }
 

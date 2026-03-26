@@ -471,6 +471,9 @@ namespace lfs::vis::gui {
                 } else if (settings.split_view_mode == SplitViewMode::PLYComparison) {
                     split_mode_rml = LOC("status_bar.split");
                     split_detail_rml = std::format("{} | {}", split_info.left_name, split_info.right_name);
+                } else if (settings.split_view_mode == SplitViewMode::IndependentDual) {
+                    split_mode_rml = "Split View";
+                    split_detail_rml = std::format("{} | {}", split_info.left_name, split_info.right_name);
                 }
             }
         }

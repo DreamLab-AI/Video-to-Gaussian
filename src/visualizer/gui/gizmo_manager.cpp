@@ -13,6 +13,7 @@
 #include "gui/gui_focus_state.hpp"
 #include "gui/gui_manager.hpp"
 #include "gui/ui_widgets.hpp"
+#include "input/input_controller.hpp"
 #include "operation/undo_entry.hpp"
 #include "operation/undo_history.hpp"
 #include "operator/operator_id.hpp"
@@ -50,6 +51,71 @@ namespace lfs::vis::gui {
             case SelectionSubMode::Centers:
             default: return lfs::vis::SelectionPreviewMode::Centers;
             }
+        }
+
+        struct ViewportGizmoPanelTarget {
+            SplitViewPanelId panel = SplitViewPanelId::Left;
+            Viewport* viewport = nullptr;
+            glm::vec2 pos{0.0f};
+            glm::vec2 size{0.0f};
+
+            [[nodiscard]] bool valid() const {
+                return viewport != nullptr && size.x > 0.0f && size.y > 0.0f;
+            }
+        };
+
+        [[nodiscard]] std::vector<ViewportGizmoPanelTarget> collectViewportGizmoPanels(
+            VisualizerImpl* const viewer,
+            const glm::vec2& viewport_pos,
+            const glm::vec2& viewport_size) {
+            std::vector<ViewportGizmoPanelTarget> panels;
+            if (!viewer || viewport_size.x <= 0.0f || viewport_size.y <= 0.0f) {
+                return panels;
+            }
+
+            auto* const rendering_manager = viewer->getRenderingManager();
+            if (!rendering_manager || !rendering_manager->isIndependentSplitViewActive()) {
+                panels.push_back({
+                    .panel = SplitViewPanelId::Left,
+                    .viewport = &viewer->getViewport(),
+                    .pos = viewport_pos,
+                    .size = viewport_size,
+                });
+                return panels;
+            }
+
+            if (const auto left_panel = rendering_manager->resolveViewerPanel(
+                    viewport_pos, viewport_size, std::nullopt, SplitViewPanelId::Left);
+                left_panel && left_panel->valid()) {
+                panels.push_back({
+                    .panel = SplitViewPanelId::Left,
+                    .viewport = &viewer->getViewport(),
+                    .pos = {left_panel->x, left_panel->y},
+                    .size = {left_panel->width, left_panel->height},
+                });
+            }
+
+            if (const auto right_panel = rendering_manager->resolveViewerPanel(
+                    viewport_pos, viewport_size, std::nullopt, SplitViewPanelId::Right);
+                right_panel && right_panel->valid()) {
+                panels.push_back({
+                    .panel = SplitViewPanelId::Right,
+                    .viewport = &rendering_manager->getIndependentSplitViewport(),
+                    .pos = {right_panel->x, right_panel->y},
+                    .size = {right_panel->width, right_panel->height},
+                });
+            }
+
+            if (panels.empty()) {
+                panels.push_back({
+                    .panel = SplitViewPanelId::Left,
+                    .viewport = &viewer->getViewport(),
+                    .pos = viewport_pos,
+                    .size = viewport_size,
+                });
+            }
+
+            return panels;
         }
     } // namespace
     constexpr float MIN_GIZMO_SCALE = 0.001f;
@@ -1199,42 +1265,70 @@ namespace lfs::vis::gui {
         if (!engine)
             return;
 
-        auto& vp = viewer_->getViewport();
         const glm::vec2 vp_pos(viewport.pos.x, viewport.pos.y);
         const glm::vec2 vp_size(viewport.size.x, viewport.size.y);
+        auto panels = collectViewportGizmoPanels(viewer_, vp_pos, vp_size);
+        if (panels.empty()) {
+            return;
+        }
 
-        const float gizmo_x = vp_pos.x + vp_size.x - VIEWPORT_GIZMO_SIZE - VIEWPORT_GIZMO_MARGIN_X;
-        const float gizmo_y = vp_pos.y + VIEWPORT_GIZMO_MARGIN_Y;
+        const auto find_panel = [&](const SplitViewPanelId panel_id) -> ViewportGizmoPanelTarget* {
+            for (auto& panel : panels) {
+                if (panel.panel == panel_id) {
+                    return &panel;
+                }
+            }
+            return nullptr;
+        };
 
         const auto& frame_input = viewer_->getWindowManager()->frameInput();
         const float mouse_x = frame_input.mouse_x;
         const float mouse_y = frame_input.mouse_y;
-        const bool mouse_in_gizmo = mouse_x >= gizmo_x &&
-                                    mouse_x <= gizmo_x + VIEWPORT_GIZMO_SIZE &&
-                                    mouse_y >= gizmo_y &&
-                                    mouse_y <= gizmo_y + VIEWPORT_GIZMO_SIZE;
 
         const bool ui_wants_mouse = guiFocusState().want_capture_mouse;
-        const int hovered_axis =
-            ui_wants_mouse ? -1
-                           : engine->hitTestViewportGizmo(glm::vec2(mouse_x, mouse_y),
-                                                          vp_pos, vp_size);
+        int hovered_axis = -1;
+        ViewportGizmoPanelTarget* hovered_panel = nullptr;
+        if (!ui_wants_mouse) {
+            for (auto& panel : panels) {
+                const float gizmo_x = panel.pos.x + panel.size.x - VIEWPORT_GIZMO_SIZE - VIEWPORT_GIZMO_MARGIN_X;
+                const float gizmo_y = panel.pos.y + VIEWPORT_GIZMO_MARGIN_Y;
+                const bool mouse_in_gizmo = mouse_x >= gizmo_x &&
+                                            mouse_x <= gizmo_x + VIEWPORT_GIZMO_SIZE &&
+                                            mouse_y >= gizmo_y &&
+                                            mouse_y <= gizmo_y + VIEWPORT_GIZMO_SIZE;
+                if (!mouse_in_gizmo) {
+                    continue;
+                }
+
+                hovered_axis = engine->hitTestViewportGizmo(glm::vec2(mouse_x, mouse_y),
+                                                            panel.pos, panel.size);
+                hovered_panel = &panel;
+                break;
+            }
+        }
         engine->setViewportGizmoHover(hovered_axis);
 
         if (!ui_wants_mouse) {
             const glm::vec2 capture_mouse_pos(mouse_x, mouse_y);
             const float time = static_cast<float>(SDL_GetTicks()) / 1000.0f;
 
-            if (frame_input.mouse_clicked[0] && mouse_in_gizmo) {
+            if (frame_input.mouse_clicked[0] && hovered_panel) {
+                if (auto* const input_controller = viewer_->getInputController()) {
+                    input_controller->setFocusedSplitPanel(hovered_panel->panel);
+                } else {
+                    rendering_manager->setFocusedSplitPanel(hovered_panel->panel);
+                }
+
+                auto& active_viewport = *hovered_panel->viewport;
                 if (hovered_axis >= 0 && hovered_axis <= 5) {
                     const int axis = hovered_axis % 3;
                     const bool negative = hovered_axis >= 3;
                     const glm::mat3 rotation = engine->getAxisViewRotation(axis, negative);
-                    const float dist = glm::length(vp.camera.pivot - vp.camera.t);
+                    const float dist = glm::length(active_viewport.camera.pivot - active_viewport.camera.t);
 
-                    vp.camera.pivot = glm::vec3(0.0f);
-                    vp.camera.R = rotation;
-                    vp.camera.t = -rotation[2] * dist;
+                    active_viewport.camera.pivot = glm::vec3(0.0f);
+                    active_viewport.camera.R = rotation;
+                    active_viewport.camera.t = -rotation[2] * dist;
 
                     const auto& settings = rendering_manager->getSettings();
                     lfs::core::events::ui::GridSettingsChanged{
@@ -1246,7 +1340,8 @@ namespace lfs::vis::gui {
                     rendering_manager->markDirty(DirtyFlag::CAMERA);
                 } else {
                     viewport_gizmo_dragging_ = true;
-                    vp.camera.startRotateAroundCenter(capture_mouse_pos, time);
+                    viewport_gizmo_active_panel_ = hovered_panel->panel;
+                    active_viewport.camera.startRotateAroundCenter(capture_mouse_pos, time);
                     if (SDL_Window* const window = SDL_GL_GetCurrentWindow()) {
                         float fx, fy;
                         SDL_GetMouseState(&fx, &fy);
@@ -1257,11 +1352,14 @@ namespace lfs::vis::gui {
             }
 
             if (viewport_gizmo_dragging_) {
-                if (frame_input.mouse_down[0]) {
-                    vp.camera.updateRotateAroundCenter(capture_mouse_pos, time);
+                if (auto* const active_panel = find_panel(viewport_gizmo_active_panel_);
+                    active_panel && frame_input.mouse_down[0]) {
+                    active_panel->viewport->camera.updateRotateAroundCenter(capture_mouse_pos, time);
                     rendering_manager->markDirty(DirtyFlag::CAMERA);
                 } else {
-                    vp.camera.endRotateAroundCenter();
+                    if (auto* const active_panel = find_panel(viewport_gizmo_active_panel_)) {
+                        active_panel->viewport->camera.endRotateAroundCenter();
+                    }
                     viewport_gizmo_dragging_ = false;
 
                     if (SDL_Window* const window = SDL_GL_GetCurrentWindow()) {
@@ -1274,17 +1372,27 @@ namespace lfs::vis::gui {
             }
         }
 
-        if (auto result = engine->renderViewportGizmo(vp.getRotationMatrix(), vp_pos, vp_size); !result) {
-            LOG_WARN("Failed to render viewport gizmo: {}", result.error());
+        for (const auto& panel : panels) {
+            if (auto result = engine->renderViewportGizmo(panel.viewport->getRotationMatrix(),
+                                                          panel.pos,
+                                                          panel.size);
+                !result) {
+                LOG_WARN("Failed to render viewport gizmo: {}", result.error());
+            }
         }
 
         if (viewport_gizmo_dragging_) {
-            const float center_x = gizmo_x + VIEWPORT_GIZMO_SIZE * 0.5f;
-            const float center_y = gizmo_y + VIEWPORT_GIZMO_SIZE * 0.5f;
-            constexpr float OVERLAY_RADIUS = VIEWPORT_GIZMO_SIZE * 0.46f;
-            ImGui::GetBackgroundDrawList()->AddCircleFilled(
-                ImVec2(center_x, center_y), OVERLAY_RADIUS,
-                toU32WithAlpha(theme().overlay.text_dim, 0.2f), 32);
+            if (const auto* const active_panel = find_panel(viewport_gizmo_active_panel_)) {
+                const float gizmo_x = active_panel->pos.x + active_panel->size.x -
+                                      VIEWPORT_GIZMO_SIZE - VIEWPORT_GIZMO_MARGIN_X;
+                const float gizmo_y = active_panel->pos.y + VIEWPORT_GIZMO_MARGIN_Y;
+                const float center_x = gizmo_x + VIEWPORT_GIZMO_SIZE * 0.5f;
+                const float center_y = gizmo_y + VIEWPORT_GIZMO_SIZE * 0.5f;
+                constexpr float OVERLAY_RADIUS = VIEWPORT_GIZMO_SIZE * 0.46f;
+                ImGui::GetBackgroundDrawList()->AddCircleFilled(
+                    ImVec2(center_x, center_y), OVERLAY_RADIUS,
+                    toU32WithAlpha(theme().overlay.text_dim, 0.2f), 32);
+            }
         }
     }
 
@@ -1364,12 +1472,16 @@ namespace lfs::vis::gui {
 
         const auto vp_pos = viewer_->getGuiManager()->getViewportPos();
         const auto vp_size = viewer_->getGuiManager()->getViewportSize();
-
-        const float gizmo_x = vp_pos.x + vp_size.x - VIEWPORT_GIZMO_SIZE - VIEWPORT_GIZMO_MARGIN_X;
-        const float gizmo_y = vp_pos.y + VIEWPORT_GIZMO_MARGIN_Y;
-
-        return x >= gizmo_x && x <= gizmo_x + VIEWPORT_GIZMO_SIZE &&
-               y >= gizmo_y && y <= gizmo_y + VIEWPORT_GIZMO_SIZE;
+        const auto panels = collectViewportGizmoPanels(viewer_, vp_pos, vp_size);
+        for (const auto& panel : panels) {
+            const float gizmo_x = panel.pos.x + panel.size.x - VIEWPORT_GIZMO_SIZE - VIEWPORT_GIZMO_MARGIN_X;
+            const float gizmo_y = panel.pos.y + VIEWPORT_GIZMO_MARGIN_Y;
+            if (x >= gizmo_x && x <= gizmo_x + VIEWPORT_GIZMO_SIZE &&
+                y >= gizmo_y && y <= gizmo_y + VIEWPORT_GIZMO_SIZE) {
+                return true;
+            }
+        }
+        return false;
     }
 
     ToolType GizmoManager::getCurrentToolMode() const {

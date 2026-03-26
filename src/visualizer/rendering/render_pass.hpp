@@ -31,6 +31,8 @@ namespace lfs::vis {
         lfs::core::Tensor* preview_selection = nullptr;
         bool saturation_mode = false;
         float saturation_amount = 0;
+        std::optional<SplitViewPanelId> panel;
+        int focused_gaussian_id = -1;
         SelectionPreviewMode selection_mode{};
     };
 
@@ -45,6 +47,7 @@ namespace lfs::vis {
 
     struct FrameContext {
         const Viewport& viewport;
+        const Viewport* secondary_viewport = nullptr;
         const ViewportRegion* viewport_region = nullptr;
         bool render_lock_held = false;
 
@@ -64,10 +67,11 @@ namespace lfs::vis {
         int hovered_gaussian_id = -1;
         float selection_flash_intensity = 0;
 
-        [[nodiscard]] lfs::rendering::FrameView makeFrameView() const {
-            return {.rotation = viewport.getRotationMatrix(),
-                    .translation = viewport.getTranslation(),
-                    .size = render_size,
+        [[nodiscard]] lfs::rendering::FrameView makeFrameView(const Viewport& source,
+                                                              const glm::ivec2 size) const {
+            return {.rotation = source.getRotationMatrix(),
+                    .translation = source.getTranslation(),
+                    .size = size,
                     .focal_length_mm = settings.focal_length_mm,
                     .near_plane = lfs::rendering::DEFAULT_NEAR_PLANE,
                     .far_plane = settings.depth_clip_enabled ? settings.depth_clip_far
@@ -77,14 +81,23 @@ namespace lfs::vis {
                     .background_color = settings.background_color};
         }
 
-        [[nodiscard]] lfs::rendering::ViewportData makeViewportData() const {
-            const auto frame_view = makeFrameView();
+        [[nodiscard]] lfs::rendering::FrameView makeFrameView() const {
+            return makeFrameView(viewport, render_size);
+        }
+
+        [[nodiscard]] lfs::rendering::ViewportData makeViewportData(const Viewport& source,
+                                                                    const glm::ivec2 size) const {
+            const auto frame_view = makeFrameView(source, size);
             return {.rotation = frame_view.rotation,
                     .translation = frame_view.translation,
                     .size = frame_view.size,
                     .focal_length_mm = frame_view.focal_length_mm,
                     .orthographic = frame_view.orthographic,
                     .ortho_scale = frame_view.ortho_scale};
+        }
+
+        [[nodiscard]] lfs::rendering::ViewportData makeViewportData() const {
+            return makeViewportData(viewport, render_size);
         }
     };
 

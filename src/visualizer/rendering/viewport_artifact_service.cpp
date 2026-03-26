@@ -103,7 +103,8 @@ namespace lfs::vis {
         const int x,
         const int y,
         const glm::ivec2& fallback_viewport_size,
-        const lfs::rendering::RenderingEngine* const engine) const {
+        const lfs::rendering::RenderingEngine* const engine,
+        const std::optional<SplitViewPanelId> panel) const {
         int viewport_width = rendered_size_.x;
         int viewport_height = rendered_size_.y;
         if (viewport_width <= 0 || viewport_height <= 0) {
@@ -130,12 +131,24 @@ namespace lfs::vis {
 
         if (metadata_.valid) {
             const lfs::core::Tensor* depth_ptr = nullptr;
+            int panel_local_x = x;
+            int panel_viewport_width = viewport_width;
 
             if (metadata_.split_position > 0.0f &&
                 metadata_.depth && metadata_.depth->is_valid()) {
-                const float normalized_x = static_cast<float>(x) / static_cast<float>(viewport_width);
+                const auto layouts = makeSplitViewPanelLayouts(viewport_width, metadata_.split_position);
+                SplitViewPanelId target_panel = panel.value_or(SplitViewPanelId::Left);
+                if (!panel) {
+                    target_panel = x >= layouts[0].width ? SplitViewPanelId::Right : SplitViewPanelId::Left;
+                }
 
-                if (normalized_x >= metadata_.split_position &&
+                const size_t panel_index = splitViewPanelIndex(target_panel);
+                if (!panel) {
+                    panel_local_x -= layouts[panel_index].x;
+                }
+                panel_viewport_width = std::max(layouts[panel_index].width, 1);
+
+                if (target_panel == SplitViewPanelId::Right &&
                     metadata_.depth_right && metadata_.depth_right->is_valid()) {
                     depth_ptr = metadata_.depth_right.get();
                 } else {
@@ -151,9 +164,11 @@ namespace lfs::vis {
 
                 int scaled_x = x;
                 int scaled_y = y;
-                if (depth_width != viewport_width || depth_height != viewport_height) {
-                    scaled_x = static_cast<int>(static_cast<float>(x) * depth_width / viewport_width);
+                if (depth_width != panel_viewport_width || depth_height != viewport_height) {
+                    scaled_x = static_cast<int>(static_cast<float>(panel_local_x) * depth_width / panel_viewport_width);
                     scaled_y = static_cast<int>(static_cast<float>(y) * depth_height / viewport_height);
+                } else {
+                    scaled_x = panel_local_x;
                 }
 
                 if (scaled_x >= 0 && scaled_x < depth_width && scaled_y >= 0 && scaled_y < depth_height) {

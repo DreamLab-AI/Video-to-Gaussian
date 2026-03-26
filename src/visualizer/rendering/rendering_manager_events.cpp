@@ -13,6 +13,7 @@ namespace lfs::vis {
 
     void RenderingManager::setupEventHandlers() {
         cmd::ToggleSplitView::when([this](const auto&) { handleToggleSplitView(); });
+        cmd::ToggleIndependentSplitView::when([this](const auto& event) { handleToggleIndependentSplitView(event); });
         cmd::ToggleGTComparison::when([this](const auto&) { handleToggleGTComparison(); });
         cmd::GoToCamView::when([this](const auto& event) { handleGoToCamView(event.cam_id); });
         ui::SplitPositionChanged::when([this](const auto& event) { handleSplitPositionChanged(event.position); });
@@ -40,6 +41,21 @@ namespace lfs::vis {
         }
         LOG_INFO("Split view: {}", enabled ? "PLY comparison mode" : "disabled");
         markDirty(DirtyFlag::SPLIT_VIEW);
+    }
+
+    void RenderingManager::handleToggleIndependentSplitView(const cmd::ToggleIndependentSplitView& event) {
+        if (!event.viewport) {
+            return;
+        }
+
+        std::lock_guard<std::mutex> lock(settings_mutex_);
+        const bool was_enabled = settings_.split_view_mode != SplitViewMode::Disabled;
+        const bool enabled = split_view_service_.toggleIndependentDual(settings_, *event.viewport);
+        if (was_enabled && !enabled) {
+            viewport_artifact_service_.clearViewportOutput();
+        }
+        LOG_INFO("Split view: {}", enabled ? "independent dual-camera mode" : "disabled");
+        markDirty(DirtyFlag::SPLIT_VIEW | DirtyFlag::CAMERA);
     }
 
     void RenderingManager::handleToggleGTComparison() {

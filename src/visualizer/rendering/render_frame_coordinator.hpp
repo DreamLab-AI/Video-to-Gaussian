@@ -29,6 +29,7 @@ namespace lfs::vis {
     public:
         struct Context {
             const Viewport& viewport;
+            const Viewport* secondary_viewport = nullptr;
             const ViewportRegion* viewport_region = nullptr;
             SceneManager* scene_manager = nullptr;
             const lfs::core::SplatData* model = nullptr;

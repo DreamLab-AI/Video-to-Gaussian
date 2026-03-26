@@ -5,6 +5,7 @@
 #pragma once
 
 #include "core/export.hpp"
+#include "internal/viewport.hpp"
 #include "rendering_types.hpp"
 #include <mutex>
 #include <optional>
@@ -25,12 +26,17 @@ namespace lfs::vis {
         [[nodiscard]] const std::optional<GTComparisonContext>& gtContext() const { return gt_context_; }
 
         [[nodiscard]] bool togglePLYComparison(RenderSettings& settings);
+        [[nodiscard]] bool toggleIndependentDual(RenderSettings& settings, const Viewport& primary_viewport);
         [[nodiscard]] GTToggleResult toggleGTComparison(RenderSettings& settings);
         void handleSceneLoaded(RenderSettings& settings);
         void handleSceneCleared(RenderSettings& settings);
         [[nodiscard]] bool handlePLYRemoved(RenderSettings& settings, SceneManager* scene_manager);
         void advanceSplitOffset(RenderSettings& settings);
         [[nodiscard]] SplitViewInfo getInfo() const;
+        void setFocusedPanel(SplitViewPanelId panel) { focused_panel_ = panel; }
+        [[nodiscard]] SplitViewPanelId focusedPanel() const { return focused_panel_; }
+        [[nodiscard]] Viewport& secondaryViewport() { return secondary_viewport_; }
+        [[nodiscard]] const Viewport& secondaryViewport() const { return secondary_viewport_; }
         void updateInfo(const FrameResources& resources);
         void prepareGTComparisonContext(SceneManager* scene_manager,
                                         const RenderSettings& settings,
@@ -49,6 +55,8 @@ namespace lfs::vis {
         SplitViewInfo current_info_;
         std::optional<GTComparisonContext> gt_context_;
         bool pre_gt_equirectangular_ = false;
+        SplitViewPanelId focused_panel_ = SplitViewPanelId::Left;
+        Viewport secondary_viewport_;
     };
 
 } // namespace lfs::vis
