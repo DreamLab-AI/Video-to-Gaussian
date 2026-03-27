@@ -8,6 +8,7 @@
 #include "rasterization_config.h"
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <condition_variable>
 #include <exception>
 #include <functional>
@@ -756,6 +757,10 @@ namespace lfs::rendering {
                                         ? views[i].cam_position
                                         : views[i].cam_position.contiguous();
             }
+
+            assert(
+                prepared_inputs.preview_selection_ptr == nullptr ||
+                !(views[0].cursor_active && views[1].cursor_active));
 
             std::array<CachedDualForwardExecutor::Task, 2> tasks;
             for (size_t i = 0; i < views.size(); ++i) {

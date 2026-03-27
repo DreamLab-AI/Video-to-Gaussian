@@ -98,7 +98,7 @@ namespace lfs::vis::gui {
                 left_panel && left_panel->valid()) {
                 panels.push_back(ViewportGizmoPanelTarget{
                     .panel = SplitViewPanelId::Left,
-                    .viewport = const_cast<Viewport*>(left_panel->viewport),
+                    .viewport = left_panel->viewport,
                     .pos = {left_panel->x, left_panel->y},
                     .size = {left_panel->width, left_panel->height},
                 });
@@ -110,7 +110,7 @@ namespace lfs::vis::gui {
                 right_panel && right_panel->valid()) {
                 panels.push_back(ViewportGizmoPanelTarget{
                     .panel = SplitViewPanelId::Right,
-                    .viewport = const_cast<Viewport*>(right_panel->viewport),
+                    .viewport = right_panel->viewport,
                     .pos = {right_panel->x, right_panel->y},
                     .size = {right_panel->width, right_panel->height},
                 });

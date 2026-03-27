@@ -497,7 +497,9 @@ namespace lfs::vis {
         context.panel = panel_override.value_or(SplitViewPanelId::Left);
 
         if (testing_viewport_ && testing_viewport_->valid()) {
+            static Viewport testing_viewport_source(1, 1);
             context.info = *testing_viewport_;
+            context.viewport = &testing_viewport_source;
             return context;
         }
 

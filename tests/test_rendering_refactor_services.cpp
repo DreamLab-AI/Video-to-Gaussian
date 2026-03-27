@@ -110,6 +110,40 @@ namespace lfs::vis {
         EXPECT_EQ(settings.split_view_offset, 0);
     }
 
+    TEST(SplitViewServiceTest, IndependentDualCopiesPrimaryViewportAndResetsFocus) {
+        SplitViewService service;
+        RenderSettings settings;
+        Viewport primary_viewport(640, 480);
+        primary_viewport.setViewMatrix(glm::mat3(1.0f), glm::vec3(1.0f, 2.0f, 3.0f));
+        service.setFocusedPanel(SplitViewPanelId::Right);
+
+        const auto result = service.toggleMode(
+            settings, SplitViewMode::IndependentDual, &primary_viewport);
+
+        EXPECT_TRUE(result.mode_changed);
+        EXPECT_EQ(settings.split_view_mode, SplitViewMode::IndependentDual);
+        EXPECT_EQ(service.focusedPanel(), SplitViewPanelId::Left);
+        EXPECT_EQ(service.secondaryViewport().getTranslation(), primary_viewport.getTranslation());
+        EXPECT_EQ(service.secondaryViewport().getRotationMatrix(), primary_viewport.getRotationMatrix());
+    }
+
+    TEST(SplitViewServiceTest, IndependentDualToggleOffDisablesModeAndResetsFocus) {
+        SplitViewService service;
+        RenderSettings settings;
+        Viewport primary_viewport(640, 480);
+
+        ASSERT_TRUE(service.toggleMode(settings, SplitViewMode::IndependentDual, &primary_viewport).mode_changed);
+        service.setFocusedPanel(SplitViewPanelId::Right);
+
+        const auto result = service.toggleMode(
+            settings, SplitViewMode::IndependentDual, &primary_viewport);
+
+        EXPECT_TRUE(result.mode_changed);
+        EXPECT_EQ(result.current_mode, SplitViewMode::Disabled);
+        EXPECT_EQ(settings.split_view_mode, SplitViewMode::Disabled);
+        EXPECT_EQ(service.focusedPanel(), SplitViewPanelId::Left);
+    }
+
     TEST_F(SceneManagerRenderStateTest, DatasetReadyStateKeepsVisiblePointCloudWhenTrainingModelIsEmpty) {
         SceneManager manager;
         manager.changeContentType(SceneManager::ContentType::Dataset);
@@ -323,6 +357,41 @@ namespace lfs::vis {
         lfs::core::events::state::SceneCleared{}.emit();
 
         EXPECT_EQ(manager.getSettings().split_view_mode, SplitViewMode::Disabled);
+    }
+
+    TEST_F(RenderingManagerEventsTest, ToggleIndependentSplitViewInitializesSecondaryViewport) {
+        RenderingManager manager;
+        Viewport primary_viewport(800, 600);
+        primary_viewport.setViewMatrix(glm::mat3(1.0f), glm::vec3(4.0f, 5.0f, 6.0f));
+
+        lfs::core::events::cmd::ToggleIndependentSplitView{
+            .viewport = &primary_viewport,
+        }
+            .emit();
+
+        EXPECT_EQ(manager.getSettings().split_view_mode, SplitViewMode::IndependentDual);
+        const auto& secondary = manager.resolvePanelViewport(primary_viewport, SplitViewPanelId::Right);
+        EXPECT_EQ(secondary.getTranslation(), primary_viewport.getTranslation());
+        EXPECT_EQ(secondary.getRotationMatrix(), primary_viewport.getRotationMatrix());
+    }
+
+    TEST_F(RenderingManagerEventsTest, ToggleIndependentSplitViewTwiceDisablesMode) {
+        RenderingManager manager;
+        Viewport primary_viewport(800, 600);
+
+        lfs::core::events::cmd::ToggleIndependentSplitView{
+            .viewport = &primary_viewport,
+        }
+            .emit();
+        ASSERT_EQ(manager.getSettings().split_view_mode, SplitViewMode::IndependentDual);
+
+        lfs::core::events::cmd::ToggleIndependentSplitView{
+            .viewport = &primary_viewport,
+        }
+            .emit();
+
+        EXPECT_EQ(manager.getSettings().split_view_mode, SplitViewMode::Disabled);
+        EXPECT_EQ(manager.getFocusedSplitPanel(), SplitViewPanelId::Left);
     }
 
 } // namespace lfs::vis

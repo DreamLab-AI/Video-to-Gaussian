@@ -142,13 +142,14 @@ namespace lfs::vis {
         bool isMouseButtonPressed(int app_button) const;
         [[nodiscard]] bool isIndependentSplitViewActive() const;
         [[nodiscard]] SplitViewPanelId splitPanelForScreenX(double x) const;
-        [[nodiscard]] std::optional<PanelInteractionState> resolvePanelInteraction(double x, double y) const;
+        [[nodiscard]] std::optional<PanelInteractionState> resolvePanelInteraction(double x, double y);
         void focusSplitPanel(SplitViewPanelId panel);
         [[nodiscard]] Viewport& activeKeyboardViewport();
         [[nodiscard]] const Viewport& activeKeyboardViewport() const;
         glm::vec3 unprojectScreenPoint(double x, double y, float fallback_distance = 5.0f) const;
         std::pair<glm::vec3, glm::vec3> computePickRay(double x, double y) const;
         input::ToolMode getCurrentToolMode() const;
+        void clearViewportDragState();
 
         // Training pause/resume helpers
         void onCameraMovementStart();
@@ -190,7 +191,6 @@ namespace lfs::vis {
         double splitter_start_x_ = 0.0;
         Viewport* drag_viewport_ = nullptr;
         SplitViewPanelId drag_split_panel_ = SplitViewPanelId::Left;
-        SplitViewPanelId focused_split_panel_ = SplitViewPanelId::Left;
         SplitViewPanelId node_rect_panel_ = SplitViewPanelId::Left;
 
         // Key states
@@ -257,6 +257,11 @@ namespace lfs::vis {
         std::size_t reset_camera_handler_id_ = 0;
         std::size_t dataset_load_completed_handler_id_ = 0;
         std::size_t window_focus_lost_handler_id_ = 0;
+        std::size_t split_toggle_handler_id_ = 0;
+        std::size_t independent_split_toggle_handler_id_ = 0;
+        std::size_t gt_comparison_toggle_handler_id_ = 0;
+        std::size_t scene_cleared_handler_id_ = 0;
+        std::size_t scene_loaded_handler_id_ = 0;
 
         input::InputRouter* input_router_ = nullptr;
         static InputController* instance_;

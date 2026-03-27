@@ -223,6 +223,27 @@ namespace lfs::vis {
             }
         });
 
+        split_toggle_handler_id_ = cmd::ToggleSplitView::when([this](const auto&) {
+            clearViewportDragState();
+            focusSplitPanel(SplitViewPanelId::Left);
+        });
+        independent_split_toggle_handler_id_ = cmd::ToggleIndependentSplitView::when([this](const auto&) {
+            clearViewportDragState();
+            focusSplitPanel(SplitViewPanelId::Left);
+        });
+        gt_comparison_toggle_handler_id_ = cmd::ToggleGTComparison::when([this](const auto&) {
+            clearViewportDragState();
+            focusSplitPanel(SplitViewPanelId::Left);
+        });
+        scene_cleared_handler_id_ = state::SceneCleared::when([this](const auto&) {
+            clearViewportDragState();
+            focusSplitPanel(SplitViewPanelId::Left);
+        });
+        scene_loaded_handler_id_ = state::SceneLoaded::when([this](const auto&) {
+            clearViewportDragState();
+            focusSplitPanel(SplitViewPanelId::Left);
+        });
+
         window_focus_lost_handler_id_ = internal::WindowFocusLost::when([this](const auto&) {
             drag_mode_ = DragMode::None;
             std::fill(std::begin(keys_movement_), std::end(keys_movement_), false);
@@ -245,6 +266,11 @@ namespace lfs::vis {
         unsubscribe(cmd::GoToCamView{}, go_to_cam_view_handler_id_);
         unsubscribe(cmd::ResetCamera{}, reset_camera_handler_id_);
         unsubscribe(state::DatasetLoadCompleted{}, dataset_load_completed_handler_id_);
+        unsubscribe(cmd::ToggleSplitView{}, split_toggle_handler_id_);
+        unsubscribe(cmd::ToggleIndependentSplitView{}, independent_split_toggle_handler_id_);
+        unsubscribe(cmd::ToggleGTComparison{}, gt_comparison_toggle_handler_id_);
+        unsubscribe(state::SceneCleared{}, scene_cleared_handler_id_);
+        unsubscribe(state::SceneLoaded{}, scene_loaded_handler_id_);
         unsubscribe(internal::WindowFocusLost{}, window_focus_lost_handler_id_);
 
         if (instance_ == this) {
@@ -338,7 +364,7 @@ namespace lfs::vis {
     }
 
     bool InputController::isNearSplitter(double x) const {
-        const auto* const rendering = services().renderingOrNull();
+        auto* const rendering = services().renderingOrNull();
         if (!rendering) {
             return false;
         }
@@ -672,12 +698,11 @@ namespace lfs::vis {
             drag_viewport_ = nullptr;
 
             if (was_dragging) {
-                if (!released_viewport || released_viewport == &viewport_) {
-                    ui::CameraMove{
-                        .rotation = viewport_.getRotationMatrix(),
-                        .translation = viewport_.getTranslation()}
-                        .emit();
-                }
+                auto* const moved_viewport = released_viewport ? released_viewport : &viewport_;
+                ui::CameraMove{
+                    .rotation = moved_viewport->getRotationMatrix(),
+                    .translation = moved_viewport->getTranslation()}
+                    .emit();
                 onCameraMovementEnd();
             }
 
@@ -1633,12 +1658,10 @@ namespace lfs::vis {
         }
 
         // Force immediate camera update
-        if (&target_viewport == &viewport_) {
-            ui::CameraMove{
-                .rotation = viewport_.getRotationMatrix(),
-                .translation = viewport_.getTranslation()}
-                .emit();
-        }
+        ui::CameraMove{
+            .rotation = target_viewport.getRotationMatrix(),
+            .translation = target_viewport.getTranslation()}
+            .emit();
         publishCameraMove(&target_viewport);
 
         // Set this as the current camera for GT comparison
@@ -1770,12 +1793,12 @@ namespace lfs::vis {
     }
 
     bool InputController::isIndependentSplitViewActive() const {
-        const auto* const rendering = services().renderingOrNull();
+        auto* const rendering = services().renderingOrNull();
         return rendering && rendering->isIndependentSplitViewActive();
     }
 
     SplitViewPanelId InputController::splitPanelForScreenX(const double x) const {
-        const auto* const rendering = services().renderingOrNull();
+        auto* const rendering = services().renderingOrNull();
         if (!rendering || viewport_bounds_.width <= 0.0f || viewport_bounds_.height <= 0.0f) {
             return SplitViewPanelId::Left;
         }
@@ -1789,12 +1812,12 @@ namespace lfs::vis {
     }
 
     std::optional<InputController::PanelInteractionState> InputController::resolvePanelInteraction(
-        const double x, const double y) const {
+        const double x, const double y) {
         if (!isInViewport(x, y)) {
             return std::nullopt;
         }
 
-        const auto* const rendering = services().renderingOrNull();
+        auto* const rendering = services().renderingOrNull();
         PanelInteractionState state;
         state.viewport = &viewport_;
         if (!rendering) {
@@ -1816,7 +1839,7 @@ namespace lfs::vis {
         }
 
         state.panel = panel->panel;
-        state.viewport = const_cast<Viewport*>(panel->viewport);
+        state.viewport = panel->viewport;
         state.local_x = static_cast<float>(x) - panel->x;
         state.local_y = static_cast<float>(y) - panel->y;
         state.width = panel->width;
@@ -1826,9 +1849,32 @@ namespace lfs::vis {
     }
 
     void InputController::focusSplitPanel(const SplitViewPanelId panel) {
-        focused_split_panel_ = panel;
         if (auto* const rendering = services().renderingOrNull()) {
             rendering->setFocusedSplitPanel(panel);
+        }
+    }
+
+    void InputController::clearViewportDragState() {
+        const bool was_camera_drag =
+            drag_mode_ == DragMode::Orbit ||
+            drag_mode_ == DragMode::Pan ||
+            drag_mode_ == DragMode::Rotate;
+
+        if (drag_mode_ == DragMode::Orbit) {
+            if (drag_viewport_) {
+                drag_viewport_->camera.endRotateAroundCenter();
+            } else {
+                viewport_.camera.endRotateAroundCenter();
+            }
+        }
+
+        drag_mode_ = DragMode::None;
+        drag_button_ = -1;
+        drag_viewport_ = nullptr;
+        drag_split_panel_ = SplitViewPanelId::Left;
+
+        if (was_camera_drag) {
+            onCameraMovementEnd();
         }
     }
 
@@ -1876,10 +1922,10 @@ namespace lfs::vis {
 
         // Throttle event emission
         const auto now = std::chrono::steady_clock::now();
-        if (active_viewport == &viewport_ && now - last_camera_publish_ >= camera_publish_interval_) {
+        if (now - last_camera_publish_ >= camera_publish_interval_) {
             ui::CameraMove{
-                .rotation = viewport_.getRotationMatrix(),
-                .translation = viewport_.getTranslation()}
+                .rotation = active_viewport->getRotationMatrix(),
+                .translation = active_viewport->getTranslation()}
                 .emit();
             last_camera_publish_ = now;
         }
@@ -1929,22 +1975,29 @@ namespace lfs::vis {
     }
 
     glm::vec3 InputController::unprojectScreenPoint(double x, double y, float fallback_distance) const {
-        const auto interaction = resolvePanelInteraction(x, y);
+        const auto* const rendering = services().renderingOrNull();
+        const auto interaction = rendering
+                                     ? rendering->resolveViewerPanel(
+                                           viewport_,
+                                           {viewport_bounds_.x, viewport_bounds_.y},
+                                           {viewport_bounds_.width, viewport_bounds_.height},
+                                           glm::vec2(static_cast<float>(x), static_cast<float>(y)))
+                                     : std::nullopt;
         const auto* const target_viewport = (interaction && interaction->valid()) ? interaction->viewport : &viewport_;
-        if (!services().renderingOrNull() || !interaction || !interaction->valid()) {
+        if (!rendering || !interaction || !interaction->valid()) {
             const glm::vec3 forward = glm::normalize(target_viewport->camera.R * glm::vec3(0, 0, 1));
             return target_viewport->camera.t + forward * fallback_distance;
         }
 
-        const float local_x = interaction->local_x;
-        const float local_y = interaction->local_y;
-        const float focal_length_mm = services().renderingOrNull()->getFocalLengthMm();
+        const float local_x = static_cast<float>(x) - interaction->x;
+        const float local_y = static_cast<float>(y) - interaction->y;
+        const float focal_length_mm = rendering->getFocalLengthMm();
         Viewport projection_viewport = *target_viewport;
         projection_viewport.windowSize = glm::ivec2(
             std::max(static_cast<int>(interaction->width), 1),
             std::max(static_cast<int>(interaction->height), 1));
 
-        const float depth = services().renderingOrNull()->getDepthAtPixel(
+        const float depth = rendering->getDepthAtPixel(
             static_cast<int>(local_x), static_cast<int>(local_y), interaction->panel);
 
         if (depth > 0.0f) {
@@ -1965,19 +2018,25 @@ namespace lfs::vis {
     }
 
     std::pair<glm::vec3, glm::vec3> InputController::computePickRay(double x, double y) const {
-        const auto interaction = resolvePanelInteraction(x, y);
+        const auto* const rendering = services().renderingOrNull();
+        const auto interaction = rendering
+                                     ? rendering->resolveViewerPanel(
+                                           viewport_,
+                                           {viewport_bounds_.x, viewport_bounds_.y},
+                                           {viewport_bounds_.width, viewport_bounds_.height},
+                                           glm::vec2(static_cast<float>(x), static_cast<float>(y)))
+                                     : std::nullopt;
         const auto* const target_viewport = (interaction && interaction->valid()) ? interaction->viewport : &viewport_;
         const glm::mat3 R = target_viewport->getRotationMatrix();
         const glm::vec3 camera_pos = target_viewport->getTranslation();
 
-        const auto* rendering = services().renderingOrNull();
         if (!rendering || !interaction || !interaction->valid()) {
             const glm::vec3 forward = glm::normalize(R * glm::vec3(0, 0, 1));
             return {camera_pos, forward};
         }
 
-        const float local_x = interaction->local_x;
-        const float local_y = interaction->local_y;
+        const float local_x = static_cast<float>(x) - interaction->x;
+        const float local_y = static_cast<float>(y) - interaction->y;
         const float width = interaction->width;
         const float height = interaction->height;
 

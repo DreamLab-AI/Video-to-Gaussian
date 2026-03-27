@@ -154,6 +154,30 @@ namespace lfs::vis {
                        render_height > 0;
             }
         };
+        struct MutableViewerPanelInfo {
+            SplitViewPanelId panel = SplitViewPanelId::Left;
+            Viewport* viewport = nullptr;
+            float x = 0.0f;
+            float y = 0.0f;
+            float width = 0.0f;
+            float height = 0.0f;
+            int render_width = 0;
+            int render_height = 0;
+
+            [[nodiscard]] bool valid() const {
+                return viewport != nullptr &&
+                       width > 0.0f &&
+                       height > 0.0f &&
+                       render_width > 0 &&
+                       render_height > 0;
+            }
+        };
+        [[nodiscard]] std::optional<MutableViewerPanelInfo> resolveViewerPanel(
+            Viewport& primary_viewport,
+            const glm::vec2& viewport_pos,
+            const glm::vec2& viewport_size,
+            std::optional<glm::vec2> screen_point = std::nullopt,
+            std::optional<SplitViewPanelId> panel_override = std::nullopt);
         [[nodiscard]] std::optional<ViewerPanelInfo> resolveViewerPanel(
             const Viewport& primary_viewport,
             const glm::vec2& viewport_pos,

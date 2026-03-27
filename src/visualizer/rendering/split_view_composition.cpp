@@ -3,6 +3,8 @@
  * SPDX-License-Identifier: GPL-3.0-or-later */
 
 #include "split_view_composition.hpp"
+#include "core/event_bridge/localization_manager.hpp"
+#include "gui/string_keys.hpp"
 #include "scene/scene_manager.hpp"
 #include "viewport_request_builder.hpp"
 #include <cassert>
@@ -74,16 +76,20 @@ namespace lfs::vis {
                 return std::nullopt;
             }
 
-            std::string gt_label = "Ground Truth";
+            std::string gt_label = LOC(lichtfeld::Strings::StatusBar::GROUND_TRUTH);
             if (ctx.scene_manager && ctx.current_camera_id >= 0) {
                 const auto disabled_uids = ctx.scene_manager->getScene().getTrainingDisabledCameraUids();
                 if (disabled_uids.count(ctx.current_camera_id) > 0) {
-                    gt_label = "Ground Truth (Excluded from Training)";
+                    gt_label = LOC(lichtfeld::Strings::StatusBar::GROUND_TRUTH_EXCLUDED);
                 }
             }
 
             const std::string detail_label =
-                ctx.current_camera_id >= 0 ? std::format("Camera {}", ctx.current_camera_id) : std::string{};
+                ctx.current_camera_id >= 0
+                    ? std::vformat(
+                          LOC(lichtfeld::Strings::StatusBar::CAMERA),
+                          std::make_format_args(ctx.current_camera_id))
+                    : std::string{};
 
             auto plan = makePlan(
                 std::array<SplitViewPanelPlan, 2>{
@@ -103,7 +109,7 @@ namespace lfs::vis {
                                   .texcoord_scale = res.gt_context->gt_texcoord_scale,
                                   .flip_y = res.gt_context->gt_needs_flip}}},
                     SplitViewPanelPlan{
-                        .label = "Rendered",
+                        .label = LOC(lichtfeld::Strings::StatusBar::RENDERED),
                         .panel =
                             {.content =
                                  {.type = lfs::rendering::PanelContentType::CachedRender,
@@ -122,7 +128,7 @@ namespace lfs::vis {
                 false,
                 true,
                 res.gt_context->dimensions);
-            plan.mode_label = "GT Compare";
+            plan.mode_label = LOC(lichtfeld::Strings::StatusBar::GT_COMPARE);
             plan.detail_label = detail_label;
             return plan;
         }
@@ -183,7 +189,7 @@ namespace lfs::vis {
                 ctx.makeViewportData().size,
                 ctx.settings.background_color,
                 false);
-            plan.mode_label = "Split";
+            plan.mode_label = LOC(lichtfeld::Strings::StatusBar::SPLIT_VIEW);
             plan.detail_label = std::format("{} | {}", plan.panels[0].label, plan.panels[1].label);
             return plan;
         }
@@ -203,7 +209,7 @@ namespace lfs::vis {
             auto plan = makePlan(
                 std::array<SplitViewPanelPlan, 2>{
                     SplitViewPanelPlan{
-                        .label = "Primary View",
+                        .label = LOC(lichtfeld::Strings::StatusBar::PRIMARY_VIEW),
                         .panel =
                             {.content =
                                  buildModelPanelContent(
@@ -221,7 +227,7 @@ namespace lfs::vis {
                                   .flip_y = std::nullopt,
                                   .normalize_x_to_panel = true}}},
                     SplitViewPanelPlan{
-                        .label = "Secondary View",
+                        .label = LOC(lichtfeld::Strings::StatusBar::SECONDARY_VIEW),
                         .panel =
                             {.content =
                                  buildModelPanelContent(
@@ -241,7 +247,7 @@ namespace lfs::vis {
                 ctx.render_size,
                 ctx.settings.background_color,
                 true);
-            plan.mode_label = "Split View";
+            plan.mode_label = LOC(lichtfeld::Strings::StatusBar::SPLIT_VIEW);
             plan.detail_label = std::format("{} | {}", plan.panels[0].label, plan.panels[1].label);
             return plan;
         }

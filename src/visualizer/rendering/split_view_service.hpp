@@ -42,6 +42,9 @@ namespace lfs::vis {
         [[nodiscard]] ModeChangeResult handlePLYRemoved(RenderSettings& settings, SceneManager* scene_manager);
         void advanceSplitOffset(RenderSettings& settings);
         [[nodiscard]] SplitViewInfo getInfo() const;
+        // Focused panel and the secondary viewport are main-thread-owned state used by
+        // input, frame planning, and rendering on the UI thread. Only current_info_ is
+        // mutex-protected because it is read from UI/status-bar code outside that path.
         void setFocusedPanel(SplitViewPanelId panel) { focused_panel_ = panel; }
         [[nodiscard]] SplitViewPanelId focusedPanel() const { return focused_panel_; }
         [[nodiscard]] Viewport& secondaryViewport() { return secondary_viewport_; }
