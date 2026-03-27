@@ -208,6 +208,8 @@ namespace lfs::rendering {
         FrameMetadata metadata;
     };
 
+    using DualGaussianImageResult = std::array<GaussianImageResult, 2>;
+
     struct PointCloudImageResult {
         std::shared_ptr<lfs::core::Tensor> image;
         FrameMetadata metadata;
@@ -282,6 +284,7 @@ namespace lfs::rendering {
         std::array<SplitViewPanel, 2> panels;
         SplitViewCompositeState composite;
         SplitViewPresentationState presentation;
+        bool prefer_batched_gaussian_render = false;
     };
 
     enum class GridPlane {
@@ -388,6 +391,10 @@ namespace lfs::rendering {
         virtual Result<GaussianImageResult> renderGaussiansImage(
             const lfs::core::SplatData& splat_data,
             const ViewportRenderRequest& request) = 0;
+
+        virtual Result<DualGaussianImageResult> renderGaussiansImagePair(
+            const lfs::core::SplatData& splat_data,
+            const std::array<ViewportRenderRequest, 2>& requests) = 0;
 
         virtual Result<std::optional<int>> queryHoveredGaussianId(
             const lfs::core::SplatData& splat_data,

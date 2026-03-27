@@ -247,6 +247,78 @@ namespace lfs::rendering {
         }
     }
 
+    Result<std::array<SplitViewRenderer::PanelRenderOutput, 2>> SplitViewRenderer::renderBatchedGaussianPanels(
+        const SplitViewRequest& request,
+        RenderingEngine& engine) {
+
+        const auto* model = request.panels[0].content.model;
+        if (model == nullptr || request.panels[1].content.model != model) {
+            return std::unexpected("Batched split render requires a shared model");
+        }
+
+        std::array<ViewportRenderRequest, 2> gaussian_requests;
+        std::array<glm::ivec2, 2> panel_sizes;
+        std::array<std::vector<glm::mat4>, 2> model_transforms_storage;
+
+        for (size_t i = 0; i < request.panels.size(); ++i) {
+            const auto& panel = request.panels[i];
+            if (panel.content.type != PanelContentType::Model3D ||
+                !panel.content.gaussian_render.has_value() ||
+                panel.content.point_cloud_render.has_value()) {
+                return std::unexpected("Batched split render requires gaussian Model3D panels");
+            }
+
+            const auto& render_state = *panel.content.gaussian_render;
+            auto scene = render_state.scene;
+            if (!scene.model_transforms) {
+                model_transforms_storage[i] = {panel.content.model_transform};
+                scene.model_transforms = &model_transforms_storage[i];
+            }
+
+            gaussian_requests[i] = ViewportRenderRequest{
+                .frame_view = render_state.frame_view,
+                .scaling_modifier = render_state.scaling_modifier,
+                .antialiasing = render_state.antialiasing,
+                .mip_filter = render_state.mip_filter,
+                .sh_degree = render_state.sh_degree,
+                .gut = render_state.gut,
+                .equirectangular = render_state.equirectangular,
+                .scene = scene,
+                .filters = render_state.filters,
+                .overlay = render_state.overlay};
+            panel_sizes[i] = render_state.frame_view.size;
+        }
+
+        auto render_result = engine.renderGaussiansImagePair(*model, gaussian_requests);
+        if (!render_result) {
+            LOG_ERROR("Failed to render batched gaussian split view: {}", render_result.error());
+            return std::unexpected(render_result.error());
+        }
+
+        std::array<PanelRenderOutput, 2> outputs;
+        for (size_t i = 0; i < outputs.size(); ++i) {
+            auto upload_renderer = ensurePanelUploadRenderer(i);
+            if (!upload_renderer) {
+                return std::unexpected(upload_renderer.error());
+            }
+
+            const auto upload_result = makeUploadResult((*render_result)[i].image, (*render_result)[i].metadata);
+            if (auto result = RenderingPipeline::uploadToScreen(upload_result, **upload_renderer, panel_sizes[i]);
+                !result) {
+                LOG_ERROR("Failed to upload batched model panel {}: {}", i, result.error());
+                return std::unexpected(result.error());
+            }
+
+            outputs[i] = PanelRenderOutput{
+                .texture_id = (*upload_renderer)->getUploadedColorTexture(),
+                .texcoord_scale = (*upload_renderer)->getTexcoordScale(),
+                .metadata = (*render_result)[i].metadata,
+                .flip_y = false};
+        }
+
+        return outputs;
+    }
+
     Result<SplitViewFrameResult> SplitViewRenderer::renderGpuFrame(
         const SplitViewRequest& request,
         RenderTargetPool& render_target_pool,
@@ -274,19 +346,38 @@ namespace lfs::rendering {
         glDisable(GL_SCISSOR_TEST);
 
         std::array<PanelRenderOutput, 2> panel_outputs;
-        for (size_t i = 0; i < request.panels.size(); ++i) {
-            glm::ivec2 panel_size = request.composite.output_size;
-            if (request.panels[i].content.point_cloud_render.has_value()) {
-                panel_size = request.panels[i].content.point_cloud_render->frame_view.size;
-            } else if (request.panels[i].content.gaussian_render.has_value()) {
-                panel_size = request.panels[i].content.gaussian_render->frame_view.size;
-            }
+        const bool can_batch_gaussians =
+            request.prefer_batched_gaussian_render &&
+            request.panels[0].content.type == PanelContentType::Model3D &&
+            request.panels[1].content.type == PanelContentType::Model3D &&
+            request.panels[0].content.gaussian_render.has_value() &&
+            request.panels[1].content.gaussian_render.has_value() &&
+            !request.panels[0].content.point_cloud_render.has_value() &&
+            !request.panels[1].content.point_cloud_render.has_value() &&
+            request.panels[0].content.model != nullptr &&
+            request.panels[0].content.model == request.panels[1].content.model;
 
-            auto panel_result = renderPanelContent(i, request.panels[i], panel_size, engine);
-            if (!panel_result) {
-                return std::unexpected(panel_result.error());
+        if (can_batch_gaussians) {
+            auto batch_result = renderBatchedGaussianPanels(request, engine);
+            if (!batch_result) {
+                return std::unexpected(batch_result.error());
             }
-            panel_outputs[i] = std::move(*panel_result);
+            panel_outputs = std::move(*batch_result);
+        } else {
+            for (size_t i = 0; i < request.panels.size(); ++i) {
+                glm::ivec2 panel_size = request.composite.output_size;
+                if (request.panels[i].content.point_cloud_render.has_value()) {
+                    panel_size = request.panels[i].content.point_cloud_render->frame_view.size;
+                } else if (request.panels[i].content.gaussian_render.has_value()) {
+                    panel_size = request.panels[i].content.gaussian_render->frame_view.size;
+                }
+
+                auto panel_result = renderPanelContent(i, request.panels[i], panel_size, engine);
+                if (!panel_result) {
+                    return std::unexpected(panel_result.error());
+                }
+                panel_outputs[i] = std::move(*panel_result);
+            }
         }
 
         std::optional<FrameMetadata> left_render_metadata =

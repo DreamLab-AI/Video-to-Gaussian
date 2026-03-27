@@ -252,7 +252,8 @@ namespace lfs::vis {
                              .flip_y = std::nullopt,
                              .normalize_x_to_panel = true}}},
                 .composite = {.output_size = ctx.render_size, .background_color = settings.background_color},
-                .presentation = {.divider_color = glm::vec4(1.0f, 0.85f, 0.0f, 1.0f)}};
+                .presentation = {.divider_color = glm::vec4(1.0f, 0.85f, 0.0f, 1.0f)},
+                .prefer_batched_gaussian_render = true};
         }
 
         return std::nullopt;

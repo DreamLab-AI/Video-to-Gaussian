@@ -71,6 +71,9 @@ namespace lfs::rendering {
             const SplitViewPanel& panel,
             const glm::ivec2& panel_size,
             RenderingEngine& engine);
+        Result<std::array<PanelRenderOutput, 2>> renderBatchedGaussianPanels(
+            const SplitViewRequest& request,
+            RenderingEngine& engine);
     };
 
 } // namespace lfs::rendering
