@@ -64,6 +64,14 @@ namespace lfs::vis::gui {
             }
         };
 
+        constexpr int NODE_GIZMO_ID_BASE = 100;
+        constexpr int CROPBOX_GIZMO_ID_BASE = 200;
+        constexpr int ELLIPSOID_GIZMO_ID_BASE = 300;
+
+        [[nodiscard]] int panelGizmoId(const int base, const SplitViewPanelId panel) {
+            return base + (panel == SplitViewPanelId::Right ? 1 : 0);
+        }
+
         [[nodiscard]] std::vector<ViewportGizmoPanelTarget> collectViewportGizmoPanels(
             VisualizerImpl* const viewer,
             const glm::vec2& viewport_pos,
@@ -116,6 +124,32 @@ namespace lfs::vis::gui {
             }
 
             return panels;
+        }
+
+        [[nodiscard]] std::optional<ViewportGizmoPanelTarget> resolveActiveGizmoPanel(
+            VisualizerImpl* const viewer,
+            const ViewportLayout& viewport) {
+            const auto panels = collectViewportGizmoPanels(
+                viewer,
+                {viewport.pos.x, viewport.pos.y},
+                {viewport.size.x, viewport.size.y});
+            if (panels.empty()) {
+                return std::nullopt;
+            }
+
+            auto* const rendering_manager = viewer ? viewer->getRenderingManager() : nullptr;
+            if (!rendering_manager || !rendering_manager->isIndependentSplitViewActive()) {
+                return panels.front();
+            }
+
+            const auto focused_panel = rendering_manager->getFocusedSplitPanel();
+            for (const auto& panel : panels) {
+                if (panel.panel == focused_panel && panel.valid()) {
+                    return panel;
+                }
+            }
+
+            return panels.front();
         }
     } // namespace
     constexpr float MIN_GIZMO_SCALE = 0.001f;
@@ -451,9 +485,13 @@ namespace lfs::vis::gui {
         const auto& settings = render_manager->getSettings();
         const bool is_multi_selection = (target_names.size() > 1);
 
-        auto& vp = ctx.viewer->getViewport();
+        const auto active_panel = resolveActiveGizmoPanel(ctx.viewer, viewport);
+        if (!active_panel || !active_panel->valid())
+            return;
+
+        auto& vp = *active_panel->viewport;
         const glm::mat4 view = vp.getViewMatrix();
-        const glm::ivec2 vp_size(static_cast<int>(viewport.size.x), static_cast<int>(viewport.size.y));
+        const glm::ivec2 vp_size(static_cast<int>(active_panel->size.x), static_cast<int>(active_panel->size.y));
         const glm::mat4 projection = lfs::rendering::createProjectionMatrixFromFocal(
             vp_size, settings.focal_length_mm, settings.orthographic, settings.ortho_scale);
 
@@ -548,8 +586,9 @@ namespace lfs::vis::gui {
             }
         }
 
+        ImGuizmo::PushID(panelGizmoId(NODE_GIZMO_ID_BASE, active_panel->panel));
         ImGuizmo::SetOrthographic(settings.orthographic);
-        ImGuizmo::SetRect(viewport.pos.x, viewport.pos.y, viewport.size.x, viewport.size.y);
+        ImGuizmo::SetRect(active_panel->pos.x, active_panel->pos.y, active_panel->size.x, active_panel->size.y);
         ImGuizmo::SetAxisLimit(GIZMO_AXIS_LIMIT);
         ImGuizmo::SetPlaneLimit(GIZMO_AXIS_LIMIT);
 
@@ -567,8 +606,8 @@ namespace lfs::vis::gui {
 
         auto* const main_viewport = ImGui::GetMainViewport();
         ImDrawList* overlay_drawlist = ImGui::GetBackgroundDrawList(main_viewport);
-        const ImVec2 clip_min(viewport.pos.x, viewport.pos.y);
-        const ImVec2 clip_max(clip_min.x + viewport.size.x, clip_min.y + viewport.size.y);
+        const ImVec2 clip_min(active_panel->pos.x, active_panel->pos.y);
+        const ImVec2 clip_max(clip_min.x + active_panel->size.x, clip_min.y + active_panel->size.y);
         overlay_drawlist->PushClipRect(clip_min, clip_max, true);
         ImGuizmo::SetDrawlist(overlay_drawlist);
 
@@ -590,8 +629,8 @@ namespace lfs::vis::gui {
             const glm::vec4 clip_pos = projection * view * glm::vec4(pivot_pos, 1.0f);
             if (clip_pos.w > 0.0f) {
                 const glm::vec2 ndc(clip_pos.x / clip_pos.w, clip_pos.y / clip_pos.w);
-                const ImVec2 screen_pos(viewport.pos.x + (ndc.x * 0.5f + 0.5f) * viewport.size.x,
-                                        viewport.pos.y + (-ndc.y * 0.5f + 0.5f) * viewport.size.y);
+                const ImVec2 screen_pos(active_panel->pos.x + (ndc.x * 0.5f + 0.5f) * active_panel->size.x,
+                                        active_panel->pos.y + (-ndc.y * 0.5f + 0.5f) * active_panel->size.y);
                 constexpr float PIVOT_RADIUS = 4.0f;
                 constexpr ImU32 PIVOT_COLOR = IM_COL32(255, 255, 255, 200);
                 constexpr ImU32 PIVOT_OUTLINE = IM_COL32(0, 0, 0, 200);
@@ -877,6 +916,7 @@ namespace lfs::vis::gui {
         }
 
         overlay_drawlist->PopClipRect();
+        ImGuizmo::PopID();
     }
 
     void GizmoManager::renderCropBoxGizmo(const UIContext& ctx, const ViewportLayout& viewport) {
@@ -905,9 +945,13 @@ namespace lfs::vis::gui {
         if (!scene_manager->getScene().isNodeEffectivelyVisible(cropbox_id))
             return;
 
-        auto& vp = ctx.viewer->getViewport();
+        const auto active_panel = resolveActiveGizmoPanel(ctx.viewer, viewport);
+        if (!active_panel || !active_panel->valid())
+            return;
+
+        auto& vp = *active_panel->viewport;
         const glm::mat4 view = vp.getViewMatrix();
-        const glm::ivec2 vp_size(static_cast<int>(viewport.size.x), static_cast<int>(viewport.size.y));
+        const glm::ivec2 vp_size(static_cast<int>(active_panel->size.x), static_cast<int>(active_panel->size.y));
         const glm::mat4 projection = lfs::rendering::createProjectionMatrixFromFocal(
             vp_size, settings.focal_length_mm, settings.orthographic, settings.ortho_scale);
 
@@ -949,8 +993,9 @@ namespace lfs::vis::gui {
             gizmo_matrix = glm::scale(gizmo_matrix, scaled_size);
         }
 
+        ImGuizmo::PushID(panelGizmoId(CROPBOX_GIZMO_ID_BASE, active_panel->panel));
         ImGuizmo::SetOrthographic(settings.orthographic);
-        ImGuizmo::SetRect(viewport.pos.x, viewport.pos.y, viewport.size.x, viewport.size.y);
+        ImGuizmo::SetRect(active_panel->pos.x, active_panel->pos.y, active_panel->size.x, active_panel->size.y);
         ImGuizmo::SetAxisLimit(GIZMO_AXIS_LIMIT);
         ImGuizmo::SetPlaneLimit(GIZMO_AXIS_LIMIT);
 
@@ -974,8 +1019,8 @@ namespace lfs::vis::gui {
 
         auto* const main_viewport = ImGui::GetMainViewport();
         ImDrawList* overlay_drawlist = ImGui::GetBackgroundDrawList(main_viewport);
-        const ImVec2 clip_min(viewport.pos.x, viewport.pos.y);
-        const ImVec2 clip_max(clip_min.x + viewport.size.x, clip_min.y + viewport.size.y);
+        const ImVec2 clip_min(active_panel->pos.x, active_panel->pos.y);
+        const ImVec2 clip_max(clip_min.x + active_panel->size.x, clip_min.y + active_panel->size.y);
         overlay_drawlist->PushClipRect(clip_min, clip_max, true);
         ImGuizmo::SetDrawlist(overlay_drawlist);
 
@@ -1067,6 +1112,7 @@ namespace lfs::vis::gui {
         }
 
         overlay_drawlist->PopClipRect();
+        ImGuizmo::PopID();
     }
 
     void GizmoManager::renderEllipsoidGizmo(const UIContext& ctx, const ViewportLayout& viewport) {
@@ -1095,9 +1141,13 @@ namespace lfs::vis::gui {
         if (!scene_manager->getScene().isNodeEffectivelyVisible(ellipsoid_id))
             return;
 
-        auto& vp = ctx.viewer->getViewport();
+        const auto active_panel = resolveActiveGizmoPanel(ctx.viewer, viewport);
+        if (!active_panel || !active_panel->valid())
+            return;
+
+        auto& vp = *active_panel->viewport;
         const glm::mat4 view = vp.getViewMatrix();
-        const glm::ivec2 vp_size(static_cast<int>(viewport.size.x), static_cast<int>(viewport.size.y));
+        const glm::ivec2 vp_size(static_cast<int>(active_panel->size.x), static_cast<int>(active_panel->size.y));
         const glm::mat4 projection = lfs::rendering::createProjectionMatrixFromFocal(
             vp_size, settings.focal_length_mm, settings.orthographic, settings.ortho_scale);
 
@@ -1134,8 +1184,9 @@ namespace lfs::vis::gui {
             gizmo_matrix = glm::scale(gizmo_matrix, scaled_radii);
         }
 
+        ImGuizmo::PushID(panelGizmoId(ELLIPSOID_GIZMO_ID_BASE, active_panel->panel));
         ImGuizmo::SetOrthographic(settings.orthographic);
-        ImGuizmo::SetRect(viewport.pos.x, viewport.pos.y, viewport.size.x, viewport.size.y);
+        ImGuizmo::SetRect(active_panel->pos.x, active_panel->pos.y, active_panel->size.x, active_panel->size.y);
         ImGuizmo::SetAxisLimit(GIZMO_AXIS_LIMIT);
         ImGuizmo::SetPlaneLimit(GIZMO_AXIS_LIMIT);
 
@@ -1159,8 +1210,8 @@ namespace lfs::vis::gui {
 
         auto* const main_viewport = ImGui::GetMainViewport();
         ImDrawList* overlay_drawlist = ImGui::GetBackgroundDrawList(main_viewport);
-        const ImVec2 clip_min(viewport.pos.x, viewport.pos.y);
-        const ImVec2 clip_max(clip_min.x + viewport.size.x, clip_min.y + viewport.size.y);
+        const ImVec2 clip_min(active_panel->pos.x, active_panel->pos.y);
+        const ImVec2 clip_max(clip_min.x + active_panel->size.x, clip_min.y + active_panel->size.y);
         overlay_drawlist->PushClipRect(clip_min, clip_max, true);
         ImGuizmo::SetDrawlist(overlay_drawlist);
 
@@ -1251,6 +1302,7 @@ namespace lfs::vis::gui {
         }
 
         overlay_drawlist->PopClipRect();
+        ImGuizmo::PopID();
     }
 
     void GizmoManager::renderViewportGizmo(const ViewportLayout& viewport) {

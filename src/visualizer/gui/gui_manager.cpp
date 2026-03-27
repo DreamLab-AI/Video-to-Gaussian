@@ -1712,10 +1712,16 @@ namespace lfs::vis::gui {
             return;
         }
 
-        auto* const draw_list = ImGui::GetForegroundDrawList(ImGui::GetMainViewport());
+        const auto& t = theme();
+        auto* const draw_list = ImGui::GetBackgroundDrawList(ImGui::GetMainViewport());
         const float divider_x = viewport_layout_.pos.x + settings.split_position * viewport_layout_.size.x;
-        constexpr float divider_width = 3.0f;
-        const ImU32 divider_color = IM_COL32(255, 217, 0, 255);
+        constexpr float kSplitDividerMinWidthPx = 10.0f;
+        const float divider_width =
+            std::max(kSplitDividerMinWidthPx * current_ui_scale_,
+                     std::round(t.viewport.border_size * current_ui_scale_ * 4.0f));
+        const float divider_left = std::round(divider_x - divider_width * 0.5f);
+        const float divider_right = std::round(divider_x + divider_width * 0.5f);
+        const ImU32 divider_fill_color = toU32(t.menu_background());
 
         draw_list->PushClipRect(
             ImVec2(viewport_layout_.pos.x, viewport_layout_.pos.y),
@@ -1723,10 +1729,9 @@ namespace lfs::vis::gui {
                    viewport_layout_.pos.y + viewport_layout_.size.y),
             true);
         draw_list->AddRectFilled(
-            ImVec2(std::round(divider_x - divider_width * 0.5f), viewport_layout_.pos.y),
-            ImVec2(std::round(divider_x + divider_width * 0.5f),
-                   viewport_layout_.pos.y + viewport_layout_.size.y),
-            divider_color);
+            ImVec2(divider_left, viewport_layout_.pos.y),
+            ImVec2(divider_right, viewport_layout_.pos.y + viewport_layout_.size.y),
+            divider_fill_color);
         draw_list->PopClipRect();
     }
 

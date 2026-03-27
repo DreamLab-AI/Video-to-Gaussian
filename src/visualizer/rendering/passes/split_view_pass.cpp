@@ -11,6 +11,8 @@
 namespace lfs::vis {
 
     namespace {
+        constexpr glm::vec4 kSplitDividerColor(0.29f, 0.33f, 0.42f, 1.0f);
+
         [[nodiscard]] lfs::rendering::SplitViewPanelContent buildModelPanelContent(
             const FrameContext& ctx,
             const Viewport& viewport,
@@ -143,7 +145,7 @@ namespace lfs::vis {
                     {.output_size = letterbox_viewport.size,
                      .background_color = settings.background_color},
                 .presentation =
-                    {.divider_color = glm::vec4(1.0f, 0.85f, 0.0f, 1.0f),
+                    {.divider_color = kSplitDividerColor,
                      .letterbox = true,
                      .content_size = res.gt_context->dimensions}};
         }
@@ -201,7 +203,7 @@ namespace lfs::vis {
                              .texcoord_scale = texcoord_scale,
                              .flip_y = std::nullopt}}},
                 .composite = {.output_size = viewport_data.size, .background_color = settings.background_color},
-                .presentation = {.divider_color = glm::vec4(1.0f, 0.85f, 0.0f, 1.0f)}};
+                .presentation = {.divider_color = kSplitDividerColor}};
         }
 
         if (settings.split_view_mode == SplitViewMode::IndependentDual) {
@@ -252,7 +254,7 @@ namespace lfs::vis {
                              .flip_y = std::nullopt,
                              .normalize_x_to_panel = true}}},
                 .composite = {.output_size = ctx.render_size, .background_color = settings.background_color},
-                .presentation = {.divider_color = glm::vec4(1.0f, 0.85f, 0.0f, 1.0f)},
+                .presentation = {.divider_color = kSplitDividerColor},
                 .prefer_batched_gaussian_render = true};
         }
 

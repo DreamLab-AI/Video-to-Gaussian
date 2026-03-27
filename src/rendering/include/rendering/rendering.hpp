@@ -275,7 +275,7 @@ namespace lfs::rendering {
     };
 
     struct SplitViewPresentationState {
-        glm::vec4 divider_color{1.0f, 0.85f, 0.0f, 1.0f};
+        glm::vec4 divider_color{0.29f, 0.33f, 0.42f, 1.0f};
         bool letterbox = false;
         glm::ivec2 content_size{0, 0};
     };
