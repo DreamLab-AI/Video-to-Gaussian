@@ -303,7 +303,10 @@ def render_depth_and_color_vectorized(
     near: float = 0.1,
     far: float = 100.0,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Vectorized depth renderer using torch for GPU acceleration.
+    """GPU-accelerated depth renderer with gaussian splatting.
+
+    Each gaussian is splatted as a 2D gaussian footprint on the image plane.
+    Uses scatter_add for weighted depth/color accumulation.
 
     Falls back to numpy version if torch/CUDA unavailable.
     """
@@ -327,49 +330,87 @@ def render_depth_and_color_vectorized(
 
     cam_x, cam_y, cam_z = cam_pts[:, 0], cam_pts[:, 1], cam_pts[:, 2]
 
+    # Clipping with margin for splat radius
     valid = (cam_z > near) & (cam_z < far)
 
-    u = intrinsics.fx * cam_x / cam_z + intrinsics.cx
-    v = intrinsics.fy * cam_y / cam_z + intrinsics.cy
-    valid &= (u >= 0) & (u < W) & (v >= 0) & (v < H)
+    u_f = intrinsics.fx * cam_x / cam_z + intrinsics.cx
+    v_f = intrinsics.fy * cam_y / cam_z + intrinsics.cy
+
+    # Allow margin for splat footprint
+    margin = 10.0
+    valid &= (u_f >= -margin) & (u_f < W + margin) & (v_f >= -margin) & (v_f < H + margin)
 
     indices = torch.where(valid)[0]
     if len(indices) == 0:
         return np.zeros((H, W), dtype=np.float32), np.zeros((H, W, 3), dtype=np.float32)
 
     depths_v = cam_z[indices]
-    us_v = u[indices]
-    vs_v = v[indices]
+    us_v = u_f[indices]
+    vs_v = v_f[indices]
     opacities_v = torch.tensor(cloud.opacities, dtype=torch.float32, device=device)[indices]
     colors_v = torch.tensor(cloud.colors, dtype=torch.float32, device=device)[indices]
+    scales_v = torch.tensor(cloud.scales, dtype=torch.float32, device=device)[indices]
 
-    # Sort front-to-back
-    sort_idx = torch.argsort(depths_v)
-    depths_v = depths_v[sort_idx]
-    us_v = us_v[sort_idx]
-    vs_v = vs_v[sort_idx]
-    opacities_v = opacities_v[sort_idx]
-    colors_v = colors_v[sort_idx]
+    # Projected gaussian radius: use max scale projected to screen
+    scales_max = scales_v.max(dim=1).values
+    projected_radius = (intrinsics.fx * scales_max / depths_v).clamp(min=1.0, max=15.0)
 
-    # Convert to integer pixel coords and accumulate with scatter
-    ui = us_v.long()
-    vi = vs_v.long()
-    pixel_idx = vi * W + ui  # flatten to 1D
-
-    # Build per-pixel depth/color by scatter with alpha compositing
-    # For a proper alpha composite we need sequential processing,
-    # but for TSDF fusion approximate depth is sufficient.
-    # Use weighted average: weight = opacity, take depth at pixel with max weight sum.
+    # Splat each gaussian to multiple pixels within its projected footprint
+    # Generate pixel offsets for each gaussian based on its radius
+    # For TSDF quality, we expand each gaussian to a small kernel
     depth_buf = torch.zeros(H * W, dtype=torch.float32, device=device)
     weight_buf = torch.zeros(H * W, dtype=torch.float32, device=device)
     color_buf = torch.zeros(H * W, 3, dtype=torch.float32, device=device)
 
-    # Scatter add weighted depth and color
-    w = opacities_v
-    depth_buf.scatter_add_(0, pixel_idx, w * depths_v)
-    weight_buf.scatter_add_(0, pixel_idx, w)
-    for c in range(3):
-        color_buf[:, c].scatter_add_(0, pixel_idx, w * colors_v[:, c])
+    # Process in radius buckets for efficiency
+    for max_r in [1, 2, 3, 5, 8, 15]:
+        min_r = {1: 0, 2: 1, 3: 2, 5: 3, 8: 5, 15: 8}[max_r]
+        mask = (projected_radius > min_r) & (projected_radius <= max_r)
+        if not mask.any():
+            continue
+
+        batch_u = us_v[mask]
+        batch_v = vs_v[mask]
+        batch_d = depths_v[mask]
+        batch_o = opacities_v[mask]
+        batch_c = colors_v[mask]
+        batch_r = projected_radius[mask]
+        n_batch = batch_u.shape[0]
+
+        # Generate kernel offsets
+        r_int = max_r
+        offsets = []
+        for dy in range(-r_int, r_int + 1):
+            for dx in range(-r_int, r_int + 1):
+                if dx * dx + dy * dy <= r_int * r_int:
+                    offsets.append((dx, dy))
+
+        for dx, dy in offsets:
+            px = (batch_u + dx).long()
+            py = (batch_v + dy).long()
+
+            in_bounds = (px >= 0) & (px < W) & (py >= 0) & (py < H)
+            if not in_bounds.any():
+                continue
+
+            px = px[in_bounds]
+            py = py[in_bounds]
+            d = batch_d[in_bounds]
+            o = batch_o[in_bounds]
+            c = batch_c[in_bounds]
+            r = batch_r[in_bounds]
+
+            # Gaussian weight based on distance from center
+            sigma = r * 0.5
+            dist_sq = float(dx * dx + dy * dy)
+            gauss_w = torch.exp(torch.tensor(-0.5 * dist_sq, device=device) / (sigma * sigma).clamp(min=0.01))
+            w = o * gauss_w
+
+            pixel_idx = py * W + px
+            depth_buf.scatter_add_(0, pixel_idx, w * d)
+            weight_buf.scatter_add_(0, pixel_idx, w)
+            for ci in range(3):
+                color_buf[:, ci].scatter_add_(0, pixel_idx, w * c[:, ci])
 
     # Normalize
     valid_mask = weight_buf > 1e-6
@@ -563,8 +604,8 @@ def run_tsdf_pipeline(
     mesh = cleaner.clean(
         mesh,
         target_faces=target_faces,
-        smooth_iterations=3,
-        min_component_ratio=0.02,
+        smooth_iterations=5,
+        min_component_ratio=0.1,  # aggressive: keep only large components
     )
     stats["timings"]["mesh_clean"] = time.perf_counter() - t0
     stats["final_vertices"] = len(mesh.vertices)
