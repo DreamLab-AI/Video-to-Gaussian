@@ -83,5 +83,32 @@
     "_meta": {
       "title": "Bake Texture"
     }
+  },
+  "8": {
+    "class_type": "PreviewAny",
+    "inputs": {
+      "source": ["7", 0]
+    },
+    "_meta": {
+      "title": "textured_glb_path"
+    }
+  },
+  "9": {
+    "class_type": "PreviewAny",
+    "inputs": {
+      "source": ["5", 0]
+    },
+    "_meta": {
+      "title": "gaussian_ply_path"
+    }
+  },
+  "10": {
+    "class_type": "PreviewAny",
+    "inputs": {
+      "source": ["6", 0]
+    },
+    "_meta": {
+      "title": "vertex_colored_glb_path"
+    }
   }
 }

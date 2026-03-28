@@ -64,9 +64,18 @@ class MeshConfig:
 @dataclass
 class InpaintConfig:
     """Background inpainting parameters."""
-    method: str = "gaussian"
-    iterations: int = 10000
+    method: str = "comfyui"
+    comfyui_api_url: str = "http://192.168.2.48:3001"
+    comfyui_direct_url: str = "http://192.168.2.48:8189"
+    local_ip: str = "192.168.2.1"
+    hf_token: str = ""
+    model: str = "flux-fill"
+    denoise: float = 0.75
+    steps: int = 28
+    guidance: float = 30.0
+    auto_download_models: bool = True
     blend_radius: float = 2.0
+    iterations: int = 10000
 
 
 @dataclass

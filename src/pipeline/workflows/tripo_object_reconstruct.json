@@ -28,5 +28,15 @@
     "_meta": {
       "title": "Tripo Image to Model"
     }
+  },
+  "3": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "images": ["1", 0],
+      "filename_prefix": "tripo/input_reference"
+    },
+    "_meta": {
+      "title": "Save Reference Image"
+    }
   }
 }

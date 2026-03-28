@@ -42,6 +42,7 @@
     },
     "6": {
       "inputs": {
+        "image": ["5", 0],
         "channel": "red"
       },
       "class_type": "ImageToMask",
@@ -65,7 +66,15 @@
     },
     "9": {
       "inputs": {
-        "positive": ["7", 0],
+        "conditioning": ["7", 0],
+        "guidance": 30.0
+      },
+      "class_type": "FluxGuidance",
+      "_meta": {"title": "FLUX Guidance (Positive)"}
+    },
+    "10": {
+      "inputs": {
+        "positive": ["9", 0],
         "negative": ["8", 0],
         "vae": ["3", 0],
         "pixels": ["4", 0],
@@ -75,20 +84,12 @@
       "class_type": "InpaintModelConditioning",
       "_meta": {"title": "Inpaint Model Conditioning"}
     },
-    "10": {
+    "11": {
       "inputs": {
         "model": ["1", 0]
       },
       "class_type": "DifferentialDiffusion",
       "_meta": {"title": "Differential Diffusion"}
-    },
-    "11": {
-      "inputs": {
-        "model": ["10", 0],
-        "conditioning": ["9", 0]
-      },
-      "class_type": "FluxGuidance",
-      "_meta": {"title": "FLUX Guidance"}
     },
     "12": {
       "inputs": {
@@ -99,9 +100,9 @@
         "scheduler": "simple",
         "denoise": 0.75,
         "model": ["11", 0],
-        "positive": ["9", 0],
-        "negative": ["9", 1],
-        "latent_image": ["9", 2]
+        "positive": ["10", 0],
+        "negative": ["10", 1],
+        "latent_image": ["10", 2]
       },
       "class_type": "KSampler",
       "_meta": {"title": "KSampler"}

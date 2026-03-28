@@ -1,5 +1,5 @@
 {
-  "_comment": "Simpler FLUX inpainting using VAEEncodeForInpaint instead of InpaintModelConditioning. Works with any FLUX dev model, not just flux1-fill-dev.",
+  "_comment": "FLUX Dev inpainting using VAEEncodeForInpaint. Works with any FLUX model.",
   "prompt": {
     "1": {
       "inputs": {
@@ -43,6 +43,7 @@
     },
     "6": {
       "inputs": {
+        "image": ["5", 0],
         "channel": "red"
       },
       "class_type": "ImageToMask",
@@ -76,18 +77,18 @@
     },
     "10": {
       "inputs": {
+        "conditioning": ["8", 0],
+        "guidance": 30.0
+      },
+      "class_type": "FluxGuidance",
+      "_meta": {"title": "FLUX Guidance"}
+    },
+    "11": {
+      "inputs": {
         "model": ["1", 0]
       },
       "class_type": "DifferentialDiffusion",
       "_meta": {"title": "Differential Diffusion"}
-    },
-    "11": {
-      "inputs": {
-        "model": ["10", 0],
-        "conditioning": ["8", 0]
-      },
-      "class_type": "FluxGuidance",
-      "_meta": {"title": "FLUX Guidance"}
     },
     "12": {
       "inputs": {
@@ -98,7 +99,7 @@
         "scheduler": "simple",
         "denoise": 0.75,
         "model": ["11", 0],
-        "positive": ["8", 0],
+        "positive": ["10", 0],
         "negative": ["9", 0],
         "latent_image": ["7", 0]
       },

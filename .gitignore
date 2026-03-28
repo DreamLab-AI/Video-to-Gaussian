@@ -49,3 +49,4 @@ __pycache__/
 *.pyc
 src/python/stubs/lichtfeld/build_info.pyi
 tasks/
+__pycache__/
