@@ -185,7 +185,8 @@ def print_scene_hierarchy(usda_path: str) -> None:
     stage = Usd.Stage.Open(usda_path)
     print("\n--- Scene Hierarchy ---")
     for prim in stage.Traverse():
-        depth = len(prim.GetPath().GetString().split("/")) - 2
+        path_str = str(prim.GetPath())
+        depth = len(path_str.split("/")) - 2
         indent = "  " * depth
         type_name = prim.GetTypeName() or "(untyped)"
         vsets = prim.GetVariantSets()

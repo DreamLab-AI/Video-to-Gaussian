@@ -1,0 +1,32 @@
+{
+  "1": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "INPUT_IMAGE_PLACEHOLDER"
+    },
+    "_meta": {
+      "title": "Load Input Image"
+    }
+  },
+  "2": {
+    "class_type": "TripoImageToModelNode",
+    "inputs": {
+      "image": ["1", 0],
+      "model_version": "v3.0-20250812",
+      "style": "None",
+      "texture": true,
+      "pbr": true,
+      "model_seed": 42,
+      "orientation": "default",
+      "texture_seed": 42,
+      "texture_quality": "detailed",
+      "texture_alignment": "original_image",
+      "face_limit": -1,
+      "quad": false,
+      "geometry_quality": "detailed"
+    },
+    "_meta": {
+      "title": "Tripo Image to Model"
+    }
+  }
+}

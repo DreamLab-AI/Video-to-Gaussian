@@ -1,0 +1,87 @@
+{
+  "1": {
+    "class_type": "LoadSAM3DModel",
+    "inputs": {
+      "compile": false,
+      "use_gpu_cache": true,
+      "dtype": "bfloat16",
+      "depth_backend": "moge2"
+    },
+    "_meta": {
+      "title": "Load SAM3D Model"
+    }
+  },
+  "2": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "INPUT_IMAGE_PLACEHOLDER"
+    },
+    "_meta": {
+      "title": "Load Input Image"
+    }
+  },
+  "3": {
+    "class_type": "SAM3D_DepthEstimate",
+    "inputs": {
+      "depth_model": ["1", 0],
+      "image": ["2", 0]
+    },
+    "_meta": {
+      "title": "Depth Estimation"
+    }
+  },
+  "4": {
+    "class_type": "SAM3DGenerateSLAT",
+    "inputs": {
+      "generator": ["1", 1],
+      "image": ["2", 0],
+      "mask": ["3", 3],
+      "pointmap_path": ["3", 1],
+      "seed": 42,
+      "stage1_steps": 25,
+      "stage1_cfg": 7.5,
+      "stage1_cfg_pm": 2.0,
+      "stage2_steps": 25,
+      "stage2_cfg": 5.0,
+      "use_distillation": false
+    },
+    "_meta": {
+      "title": "Generate SLAT"
+    }
+  },
+  "5": {
+    "class_type": "SAM3DGaussianDecode",
+    "inputs": {
+      "slat_decoder_gs": ["1", 2],
+      "slat": ["4", 0]
+    },
+    "_meta": {
+      "title": "Decode Gaussians"
+    }
+  },
+  "6": {
+    "class_type": "SAM3DMeshDecode",
+    "inputs": {
+      "slat_decoder_mesh": ["1", 3],
+      "slat": ["4", 0],
+      "with_postprocess": true,
+      "simplify": 0.90
+    },
+    "_meta": {
+      "title": "Decode Mesh"
+    }
+  },
+  "7": {
+    "class_type": "SAM3DTextureBake",
+    "inputs": {
+      "glb_path": ["6", 0],
+      "ply_path": ["5", 0],
+      "texture_mode": "opt",
+      "texture_size": 1024,
+      "rendering_engine": "nvdiffrast"
+    },
+    "_meta": {
+      "title": "Bake Texture"
+    }
+  }
+}

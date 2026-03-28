@@ -1,0 +1,126 @@
+{
+  "prompt": {
+    "1": {
+      "inputs": {
+        "unet_name": "flux1-fill-dev.safetensors",
+        "weight_dtype": "default"
+      },
+      "class_type": "UNETLoader",
+      "_meta": {"title": "Load FLUX Fill Model"}
+    },
+    "2": {
+      "inputs": {
+        "clip_name1": "clip_l.safetensors",
+        "clip_name2": "t5xxl_fp16.safetensors",
+        "type": "flux"
+      },
+      "class_type": "DualCLIPLoader",
+      "_meta": {"title": "Load FLUX CLIP"}
+    },
+    "3": {
+      "inputs": {
+        "vae_name": "ae.safetensors"
+      },
+      "class_type": "VAELoader",
+      "_meta": {"title": "Load FLUX VAE"}
+    },
+    "4": {
+      "inputs": {
+        "image": "INPUT_IMAGE_URL",
+        "upload": "image"
+      },
+      "class_type": "LoadImage",
+      "_meta": {"title": "Load Source Image"}
+    },
+    "5": {
+      "inputs": {
+        "image": "INPUT_MASK_URL",
+        "upload": "image"
+      },
+      "class_type": "LoadImage",
+      "_meta": {"title": "Load Mask Image"}
+    },
+    "6": {
+      "inputs": {
+        "channel": "red"
+      },
+      "class_type": "ImageToMask",
+      "_meta": {"title": "Image To Mask"}
+    },
+    "7": {
+      "inputs": {
+        "text": "INPUT_PROMPT",
+        "clip": ["2", 0]
+      },
+      "class_type": "CLIPTextEncode",
+      "_meta": {"title": "Positive Prompt"}
+    },
+    "8": {
+      "inputs": {
+        "text": "",
+        "clip": ["2", 0]
+      },
+      "class_type": "CLIPTextEncode",
+      "_meta": {"title": "Negative Prompt"}
+    },
+    "9": {
+      "inputs": {
+        "positive": ["7", 0],
+        "negative": ["8", 0],
+        "vae": ["3", 0],
+        "pixels": ["4", 0],
+        "mask": ["6", 0],
+        "noise_mask": true
+      },
+      "class_type": "InpaintModelConditioning",
+      "_meta": {"title": "Inpaint Model Conditioning"}
+    },
+    "10": {
+      "inputs": {
+        "model": ["1", 0]
+      },
+      "class_type": "DifferentialDiffusion",
+      "_meta": {"title": "Differential Diffusion"}
+    },
+    "11": {
+      "inputs": {
+        "model": ["10", 0],
+        "conditioning": ["9", 0]
+      },
+      "class_type": "FluxGuidance",
+      "_meta": {"title": "FLUX Guidance"}
+    },
+    "12": {
+      "inputs": {
+        "seed": 42,
+        "steps": 28,
+        "cfg": 1.0,
+        "sampler_name": "euler",
+        "scheduler": "simple",
+        "denoise": 0.75,
+        "model": ["11", 0],
+        "positive": ["9", 0],
+        "negative": ["9", 1],
+        "latent_image": ["9", 2]
+      },
+      "class_type": "KSampler",
+      "_meta": {"title": "KSampler"}
+    },
+    "13": {
+      "inputs": {
+        "samples": ["12", 0],
+        "vae": ["3", 0]
+      },
+      "class_type": "VAEDecode",
+      "_meta": {"title": "VAE Decode"}
+    },
+    "14": {
+      "inputs": {
+        "filename_prefix": "inpaint_result",
+        "images": ["13", 0]
+      },
+      "class_type": "SaveImage",
+      "_meta": {"title": "Save Result"}
+    }
+  }
+}

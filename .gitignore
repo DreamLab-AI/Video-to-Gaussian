@@ -14,6 +14,12 @@ data
 *.pt
 *.py
 !scripts/lichtfeld_mcp_bridge.py
+!scripts/hardware_trace.py
+!scripts/run_gallery_pipeline.py
+!scripts/ppisp_report.py
+!scripts/extract_strings.py
+!scripts/validate_localization.py
+!scripts/benchmark_omniblender.sh
 !src/python/_lfs_panel_contract.py
 !src/python/lfs_plugins/**/*.py
 !src/python/scripts/manage_stubs.py
@@ -39,6 +45,7 @@ build*/**
 !weights/*.pt
 lichtfeld-studio.aps
 .vs__pycache__/
+__pycache__/
 *.pyc
 src/python/stubs/lichtfeld/build_info.pyi
 tasks/
