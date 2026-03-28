@@ -303,10 +303,14 @@ def render_depth_and_color_vectorized(
     near: float = 0.1,
     far: float = 100.0,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """GPU-accelerated depth renderer with gaussian splatting.
+    """GPU-accelerated depth renderer using opacity-weighted front-surface depth.
 
-    Each gaussian is splatted as a 2D gaussian footprint on the image plane.
-    Uses scatter_add for weighted depth/color accumulation.
+    Strategy for TSDF-quality depth maps:
+    1. Project all gaussians to screen coordinates
+    2. For each pixel, find the median depth of high-opacity gaussians
+       within a depth band (to get the front surface, not the cloud average)
+    3. Use scatter_reduce with 'amin' for a fast min-depth approximation,
+       then smooth lightly to fill gaps
 
     Falls back to numpy version if torch/CUDA unavailable.
     """
@@ -330,14 +334,13 @@ def render_depth_and_color_vectorized(
 
     cam_x, cam_y, cam_z = cam_pts[:, 0], cam_pts[:, 1], cam_pts[:, 2]
 
-    # Clipping with margin for splat radius
     valid = (cam_z > near) & (cam_z < far)
 
     u_f = intrinsics.fx * cam_x / cam_z + intrinsics.cx
     v_f = intrinsics.fy * cam_y / cam_z + intrinsics.cy
 
-    # Allow margin for splat footprint
-    margin = 10.0
+    # Allow margin for splat radius
+    margin = 5.0
     valid &= (u_f >= -margin) & (u_f < W + margin) & (v_f >= -margin) & (v_f < H + margin)
 
     indices = torch.where(valid)[0]
@@ -351,76 +354,103 @@ def render_depth_and_color_vectorized(
     colors_v = torch.tensor(cloud.colors, dtype=torch.float32, device=device)[indices]
     scales_v = torch.tensor(cloud.scales, dtype=torch.float32, device=device)[indices]
 
-    # Projected gaussian radius: use max scale projected to screen
+    # Compute projected radius for each gaussian
     scales_max = scales_v.max(dim=1).values
-    projected_radius = (intrinsics.fx * scales_max / depths_v).clamp(min=1.0, max=15.0)
+    projected_radius = (intrinsics.fx * scales_max / depths_v).clamp(min=1.0, max=10.0)
+    splat_r = projected_radius.long().clamp(min=1, max=5)
 
-    # Splat each gaussian to multiple pixels within its projected footprint
-    # Generate pixel offsets for each gaussian based on its radius
-    # For TSDF quality, we expand each gaussian to a small kernel
-    depth_buf = torch.zeros(H * W, dtype=torch.float32, device=device)
-    weight_buf = torch.zeros(H * W, dtype=torch.float32, device=device)
-    color_buf = torch.zeros(H * W, 3, dtype=torch.float32, device=device)
+    # Build depth map using min-depth per pixel (front surface)
+    # Also accumulate weighted color from gaussians near the front surface
+    INF = float(far * 2)
+    depth_buf = torch.full((H, W), INF, dtype=torch.float32, device=device)
+    color_buf = torch.zeros((H, W, 3), dtype=torch.float32, device=device)
+    weight_buf = torch.zeros((H, W), dtype=torch.float32, device=device)
 
-    # Process in radius buckets for efficiency
-    for max_r in [1, 2, 3, 5, 8, 15]:
-        min_r = {1: 0, 2: 1, 3: 2, 5: 3, 8: 5, 15: 8}[max_r]
-        mask = (projected_radius > min_r) & (projected_radius <= max_r)
+    # Phase 1: Scatter minimum depth with small splat kernels
+    for r in range(0, 6):
+        if r == 0:
+            mask = splat_r >= 1  # all gaussians get center pixel
+        else:
+            mask = splat_r >= r
+
         if not mask.any():
             continue
 
         batch_u = us_v[mask]
         batch_v = vs_v[mask]
         batch_d = depths_v[mask]
-        batch_o = opacities_v[mask]
-        batch_c = colors_v[mask]
-        batch_r = projected_radius[mask]
-        n_batch = batch_u.shape[0]
 
-        # Generate kernel offsets
-        r_int = max_r
-        offsets = []
-        for dy in range(-r_int, r_int + 1):
-            for dx in range(-r_int, r_int + 1):
-                if dx * dx + dy * dy <= r_int * r_int:
-                    offsets.append((dx, dy))
+        offsets = [(0, 0)] if r == 0 else []
+        if r > 0:
+            for dy in range(-r, r + 1):
+                for dx in range(-r, r + 1):
+                    if dx * dx + dy * dy <= r * r and (dx != 0 or dy != 0):
+                        offsets.append((dx, dy))
 
         for dx, dy in offsets:
             px = (batch_u + dx).long()
             py = (batch_v + dy).long()
-
             in_bounds = (px >= 0) & (px < W) & (py >= 0) & (py < H)
             if not in_bounds.any():
                 continue
+            px_valid = px[in_bounds]
+            py_valid = py[in_bounds]
+            d_valid = batch_d[in_bounds]
+            # Scatter min
+            depth_buf[py_valid, px_valid] = torch.minimum(
+                depth_buf[py_valid, px_valid], d_valid
+            )
 
-            px = px[in_bounds]
-            py = py[in_bounds]
-            d = batch_d[in_bounds]
-            o = batch_o[in_bounds]
-            c = batch_c[in_bounds]
-            r = batch_r[in_bounds]
+    # Phase 2: Accumulate weighted color for gaussians near the front surface
+    # Use a depth band around the min-depth at each pixel
+    depth_band = depth_buf.max() * 0.05  # 5% of max depth as band width
+    depth_flat = depth_buf.reshape(-1)
 
-            # Gaussian weight based on distance from center
-            sigma = r * 0.5
-            dist_sq = float(dx * dx + dy * dy)
-            gauss_w = torch.exp(torch.tensor(-0.5 * dist_sq, device=device) / (sigma * sigma).clamp(min=0.01))
-            w = o * gauss_w
+    ui = us_v.long().clamp(0, W - 1)
+    vi = vs_v.long().clamp(0, H - 1)
+    pixel_idx = vi * W + ui
 
-            pixel_idx = py * W + px
-            depth_buf.scatter_add_(0, pixel_idx, w * d)
-            weight_buf.scatter_add_(0, pixel_idx, w)
-            for ci in range(3):
-                color_buf[:, ci].scatter_add_(0, pixel_idx, w * c[:, ci])
+    # Get the min-depth at each gaussian's pixel
+    ref_depth = depth_flat[pixel_idx]
+    # Keep gaussians within the depth band of the front surface
+    near_surface = (depths_v - ref_depth).abs() < depth_band
+    near_surface &= ref_depth < INF
 
-    # Normalize
+    if near_surface.any():
+        ns_idx = pixel_idx[near_surface]
+        ns_w = opacities_v[near_surface]
+        ns_c = colors_v[near_surface]
+
+        weight_flat = weight_buf.reshape(-1)
+        weight_flat.scatter_add_(0, ns_idx, ns_w)
+
+        color_flat = color_buf.reshape(H * W, 3)
+        for ci in range(3):
+            color_flat[:, ci].scatter_add_(0, ns_idx, ns_w * ns_c[:, ci])
+
+    # Normalize color
     valid_mask = weight_buf > 1e-6
-    depth_buf[valid_mask] /= weight_buf[valid_mask]
-    for c in range(3):
-        color_buf[valid_mask, c] /= weight_buf[valid_mask]
-    depth_buf[~valid_mask] = 0.0
+    for ci in range(3):
+        color_buf[:, :, ci][valid_mask] /= weight_buf[valid_mask]
 
-    depth_np = depth_buf.reshape(H, W).cpu().numpy()
-    color_np = color_buf.reshape(H, W, 3).cpu().numpy()
+    # Mark pixels with no depth as 0
+    depth_buf[depth_buf >= INF] = 0.0
+
+    # Phase 3: Light dilation to fill 1-pixel gaps
+    depth_np = depth_buf.cpu().numpy()
+    color_np = color_buf.cpu().numpy()
+
+    from scipy.ndimage import maximum_filter, uniform_filter
+    valid_px = depth_np > 0
+    # Dilate depth slightly to fill small holes
+    dilated = maximum_filter(depth_np, size=3)
+    fill_mask = (~valid_px) & (dilated > 0)
+    depth_np[fill_mask] = dilated[fill_mask]
+    # Smooth color into holes
+    for ci in range(3):
+        smoothed = uniform_filter(color_np[:, :, ci], size=3)
+        color_np[:, :, ci][fill_mask] = smoothed[fill_mask]
+
     return depth_np, color_np
 
 
