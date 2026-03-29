@@ -1,7 +1,11 @@
 # SPDX-FileCopyrightText: 2026 LichtFeld Studio Authors
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""CLI entry point: python -m pipeline.cli video2scene <video> <output> [options]"""
+"""CLI entry point: python -m pipeline.cli video2scene <video> <output> [options]
+
+Runs the pipeline stages sequentially. For interactive use with Claude Code,
+import PipelineStages directly and call stages individually.
+"""
 
 from __future__ import annotations
 
@@ -13,13 +17,13 @@ import time
 from pathlib import Path
 
 from pipeline.config import PipelineConfig
-from pipeline.orchestrator import PipelineOrchestrator, PipelineState
+from pipeline.stages import PipelineStages, STAGE_NAMES
 
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="pipeline",
-        description="Gaussian Toolkit video-to-scene agentic pipeline",
+        description="Gaussian Toolkit video-to-scene pipeline (stage-based)",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -30,11 +34,9 @@ def _build_parser() -> argparse.ArgumentParser:
     v2s.add_argument("--config", "-c", help="Path to pipeline config JSON")
     v2s.add_argument("--fps", type=float, help="Frame extraction FPS")
     v2s.add_argument("--max-iter", type=int, help="Max training iterations")
-    v2s.add_argument("--strategy", choices=["mcmc", "default"], help="Training strategy")
-    v2s.add_argument("--endpoint", help="MCP endpoint URL")
+    v2s.add_argument("--strategy", choices=["mcmc", "mrnf", "default"], help="Training strategy")
     v2s.add_argument("--objects", nargs="*", help="Object descriptions for decomposition")
     v2s.add_argument("--target-psnr", type=float, help="Target PSNR threshold")
-    v2s.add_argument("--max-retries", type=int, help="Max retries per stage")
     v2s.add_argument("--verbose", "-v", action="store_true", help="Verbose logging")
     v2s.add_argument("--quiet", "-q", action="store_true", help="Suppress progress output")
 
@@ -49,28 +51,25 @@ def _build_parser() -> argparse.ArgumentParser:
     cfg_validate.add_argument("file", help="Config file to validate")
 
     # --- status ---
-    st = sub.add_parser("status", help="Show pipeline status from a status file")
-    st.add_argument("status_file", help="Path to pipeline_status.json")
+    st = sub.add_parser("status", help="Show pipeline status for a job directory")
+    st.add_argument("job_dir", help="Path to the job output directory")
 
     return parser
 
 
 def _apply_overrides(config: PipelineConfig, args: argparse.Namespace) -> None:
-    if args.fps is not None:
+    if getattr(args, "fps", None) is not None:
         config.ingest.fps = args.fps
-    if args.max_iter is not None:
+    if getattr(args, "max_iter", None) is not None:
         config.training.max_iterations = args.max_iter
-    if args.strategy is not None:
+        config.training.iterations = args.max_iter
+    if getattr(args, "strategy", None) is not None:
         config.training.strategy = args.strategy
-    if args.endpoint is not None:
-        config.mcp_endpoint = args.endpoint
-    if args.objects is not None:
+    if getattr(args, "objects", None) is not None:
         config.decompose.descriptions = args.objects
-    if args.target_psnr is not None:
+    if getattr(args, "target_psnr", None) is not None:
         config.training.target_psnr = args.target_psnr
         config.quality.gate1_min_psnr = args.target_psnr * 0.8
-    if args.max_retries is not None:
-        config.retry.max_retries = args.max_retries
 
 
 def _setup_logging(verbose: bool, quiet: bool) -> None:
@@ -80,21 +79,6 @@ def _setup_logging(verbose: bool, quiet: bool) -> None:
         format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
         datefmt="%H:%M:%S",
     )
-
-
-def _progress_display(status_file: Path) -> None:
-    """Print a simple progress bar from the status file."""
-    try:
-        data = json.loads(status_file.read_text(encoding="utf-8"))
-        progress = data.get("progress", 0.0)
-        state = data.get("state", "UNKNOWN")
-        bar_width = 40
-        filled = int(bar_width * progress)
-        bar = "#" * filled + "-" * (bar_width - filled)
-        sys.stderr.write(f"\r[{bar}] {progress:.0%} {state}")
-        sys.stderr.flush()
-    except (OSError, json.JSONDecodeError):
-        pass
 
 
 def cmd_video2scene(args: argparse.Namespace) -> int:
@@ -119,37 +103,124 @@ def cmd_video2scene(args: argparse.Namespace) -> int:
         return 1
 
     output = Path(args.output)
-    orchestrator = PipelineOrchestrator(
-        video_path=str(video),
-        output_dir=str(output),
-        config=config,
-    )
+    output.mkdir(parents=True, exist_ok=True)
+    fps = args.fps or config.ingest.fps
+    iterations = args.max_iter or config.training.iterations
+
+    p = PipelineStages(str(output), config=config)
 
     print(f"Pipeline: {video} -> {output}")
-    print(f"Strategy: {config.training.strategy}, max_iter: {config.training.max_iterations}")
+    print(f"Strategy: {config.training.strategy}, iterations: {iterations}")
 
     start = time.monotonic()
-    status = orchestrator.run()
-    elapsed = time.monotonic() - start
+    all_artifacts: dict[str, str] = {}
 
-    print()  # newline after progress bar
-    if status.state == PipelineState.DONE.value:
-        print(f"Pipeline completed in {elapsed:.1f}s")
-        partial = orchestrator.get_partial_results()
-        for name, path in partial["artifacts"].items():
-            if path:
+    # Stage 1: Ingest
+    print("\n--- Ingest ---")
+    result = p.ingest(str(video), fps=fps)
+    print(f"  {result.stage}: {'OK' if result.success else 'FAIL'} {result.metrics}")
+    if not result.success:
+        print(f"  Error: {result.error}", file=sys.stderr)
+        return 1
+    all_artifacts.update(result.artifacts)
+    frames_dir = result.artifacts["frames_dir"]
+
+    # Stage 2: Remove people (auto-skip if disabled)
+    print("\n--- Remove People ---")
+    result = p.remove_people(frames_dir)
+    print(f"  {result.stage}: {'OK' if result.success else 'FAIL'} {result.metrics}")
+    if not result.success:
+        print(f"  Error: {result.error}", file=sys.stderr)
+        return 1
+    all_artifacts.update(result.artifacts)
+    frames_dir = result.artifacts.get("cleaned_frames_dir", frames_dir)
+
+    # Stage 3: Select frames
+    print("\n--- Select Frames ---")
+    result = p.select_frames(frames_dir)
+    print(f"  {result.stage}: {'OK' if result.success else 'FAIL'} {result.metrics}")
+    if not result.success:
+        print(f"  Error: {result.error}", file=sys.stderr)
+        return 1
+    all_artifacts.update(result.artifacts)
+    frames_dir = result.artifacts.get("selected_frames_dir", frames_dir)
+
+    # Stage 4: Reconstruct
+    print("\n--- Reconstruct ---")
+    result = p.reconstruct(frames_dir)
+    print(f"  {result.stage}: {'OK' if result.success else 'FAIL'} {result.metrics}")
+    if not result.success:
+        print(f"  Error: {result.error}", file=sys.stderr)
+        return 1
+    all_artifacts.update(result.artifacts)
+    colmap_dir = result.artifacts["colmap_dir"]
+
+    # Stage 5: Train
+    print("\n--- Train ---")
+    result = p.train(colmap_dir, iterations=iterations)
+    print(f"  {result.stage}: {'OK' if result.success else 'FAIL'} {result.metrics}")
+    if not result.success:
+        print(f"  Error: {result.error}", file=sys.stderr)
+        return 1
+    all_artifacts.update(result.artifacts)
+    ply_path = result.artifacts["ply_path"]
+
+    # Stage 6: Segment
+    print("\n--- Segment ---")
+    result = p.segment(ply_path, frames_dir)
+    print(f"  {result.stage}: {'OK' if result.success else 'FAIL'} {result.metrics}")
+    if not result.success:
+        print(f"  Error: {result.error}", file=sys.stderr)
+        return 1
+    all_artifacts.update(result.artifacts)
+    objects_json = result.artifacts.get("objects", "[]")
+
+    # Stage 7: Extract objects
+    print("\n--- Extract Objects ---")
+    result = p.extract_objects(ply_path, labels=objects_json)
+    print(f"  {result.stage}: {'OK' if result.success else 'FAIL'} {result.metrics}")
+    if not result.success:
+        print(f"  Error: {result.error}", file=sys.stderr)
+        return 1
+    all_artifacts.update(result.artifacts)
+    object_plys = result.artifacts.get("object_plys", "[]")
+
+    # Stage 8: Mesh objects
+    print("\n--- Mesh Objects ---")
+    result = p.mesh_objects(object_plys)
+    print(f"  {result.stage}: {'OK' if result.success else 'FAIL'} {result.metrics}")
+    if not result.success:
+        print(f"  Error: {result.error}", file=sys.stderr)
+        return 1
+    all_artifacts.update(result.artifacts)
+    meshes_json = result.artifacts.get("meshes", "[]")
+
+    # Stage 9: Texture bake
+    print("\n--- Texture Bake ---")
+    result = p.texture_bake(meshes_json)
+    print(f"  {result.stage}: {'OK' if result.success else 'FAIL'} {result.metrics}")
+    meshes_json = result.artifacts.get("textured_meshes", meshes_json)
+
+    # Stage 10: Assemble USD
+    print("\n--- Assemble USD ---")
+    result = p.assemble_usd(meshes_json)
+    print(f"  {result.stage}: {'OK' if result.success else 'FAIL'} {result.metrics}")
+    all_artifacts.update(result.artifacts)
+
+    # Stage 11: Validate
+    print("\n--- Validate ---")
+    result = p.validate()
+    print(f"  {result.stage}: {'OK' if result.success else 'FAIL'} {result.metrics}")
+
+    elapsed = time.monotonic() - start
+    if result.success:
+        print(f"\nPipeline completed in {elapsed:.1f}s")
+        for name, path in all_artifacts.items():
+            if path and not name.startswith("ply:") and not name.startswith("mesh:"):
                 print(f"  {name}: {path}")
         return 0
     else:
-        print(f"Pipeline FAILED at state {status.state} after {elapsed:.1f}s")
-        if status.error:
-            print(f"  Error: {status.error}")
-        partial = orchestrator.get_partial_results()
-        if partial["artifacts"]:
-            print("  Partial artifacts:")
-            for name, path in partial["artifacts"].items():
-                if path:
-                    print(f"    {name}: {path}")
+        print(f"\nPipeline finished with validation errors after {elapsed:.1f}s")
         return 1
 
 
@@ -183,13 +254,15 @@ def cmd_config(args: argparse.Namespace) -> int:
 
 
 def cmd_status(args: argparse.Namespace) -> int:
-    path = Path(args.status_file)
-    if not path.exists():
-        print(f"Status file not found: {path}", file=sys.stderr)
+    job_dir = Path(args.job_dir)
+    if not job_dir.exists():
+        print(f"Job directory not found: {job_dir}", file=sys.stderr)
         return 1
 
-    data = json.loads(path.read_text(encoding="utf-8"))
-    print(json.dumps(data, indent=2))
+    config = PipelineConfig()
+    p = PipelineStages(str(job_dir), config=config)
+    status = p.status()
+    print(json.dumps(status, indent=2))
     return 0
 
 

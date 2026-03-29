@@ -2,12 +2,12 @@
 # SPDX-FileCopyrightText: 2026 LichtFeld Studio Authors
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""Test suite for the pipeline orchestrator, MCP client, quality gates, and config.
+"""Test suite for the pipeline stages, MCP client, quality gates, and config.
 
 Run from repo root:
     python3 scripts/test_orchestrator.py
 
-No running MCP server is required — HTTP calls are intercepted.
+No running MCP server is required -- HTTP calls are intercepted.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from unittest.mock import patch, MagicMock
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from pipeline.config import PipelineConfig, IngestConfig, TrainingConfig
-from pipeline.orchestrator import PipelineOrchestrator, PipelineState, _TRANSITIONS, StageResult
+from pipeline.stages import PipelineStages, StageResult, STAGE_NAMES
 from pipeline.mcp_client import McpClient, McpError, McpConnectionError
 from pipeline.quality_gates import (
     FrameStats,
@@ -81,48 +81,69 @@ class TestPipelineConfig(unittest.TestCase):
         self.assertIsInstance(d, dict)
         self.assertIn("ingest", d)
         self.assertIn("training", d)
-        self.assertEqual(d["training"]["strategy"], "mcmc")
 
 
 # =========================================================================
-# State machine tests
+# Stage-based pipeline tests
 # =========================================================================
 
-class TestStateMachine(unittest.TestCase):
+class TestPipelineStages(unittest.TestCase):
 
-    def test_transition_chain_is_complete(self):
-        """Every state except DONE and FAILED has a successor."""
-        non_terminal = {s for s in PipelineState if s not in (
-            PipelineState.DONE, PipelineState.FAILED, PipelineState.IDLE,
-        )}
-        for state in non_terminal:
-            self.assertIn(
-                state, _TRANSITIONS,
-                f"Missing transition from {state.value}",
-            )
+    def test_stage_names_complete(self):
+        """All stage names are defined."""
+        self.assertEqual(len(STAGE_NAMES), 11)
+        self.assertIn("ingest", STAGE_NAMES)
+        self.assertIn("validate", STAGE_NAMES)
+        self.assertIn("train", STAGE_NAMES)
 
-    def test_transition_chain_reaches_done(self):
-        """Walking the transition map from INGEST reaches DONE."""
-        state = PipelineState.INGEST
-        visited = set()
-        while state != PipelineState.DONE:
-            self.assertNotIn(state, visited, f"Cycle detected at {state.value}")
-            visited.add(state)
-            state = _TRANSITIONS[state]
-        self.assertEqual(state, PipelineState.DONE)
-
-    def test_all_states_accounted_for(self):
-        """The transition map plus terminals covers all states."""
-        covered = set(_TRANSITIONS.keys()) | {PipelineState.DONE, PipelineState.FAILED, PipelineState.IDLE}
-        self.assertEqual(covered, set(PipelineState))
-
-    def test_orchestrator_initial_state(self):
+    def test_init_creates_instance(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            orch = PipelineOrchestrator(
-                video_path="/dev/null",
-                output_dir=tmpdir,
-            )
-            self.assertEqual(orch.state, PipelineState.IDLE)
+            p = PipelineStages(tmpdir)
+            self.assertEqual(str(p.job_dir), tmpdir)
+            self.assertIsInstance(p.config, PipelineConfig)
+
+    def test_ingest_missing_video(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            p = PipelineStages(tmpdir)
+            result = p.ingest("/nonexistent/video.mp4")
+            self.assertFalse(result.success)
+            self.assertEqual(result.stage, "ingest")
+            self.assertIn("not found", result.error)
+
+    def test_reconstruct_missing_frames(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            p = PipelineStages(tmpdir)
+            result = p.reconstruct("/nonexistent/frames")
+            self.assertFalse(result.success)
+            self.assertEqual(result.stage, "reconstruct")
+
+    def test_train_missing_colmap(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            p = PipelineStages(tmpdir)
+            result = p.train("/nonexistent/colmap")
+            self.assertFalse(result.success)
+            self.assertEqual(result.stage, "train")
+
+    def test_validate_empty_dir(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            p = PipelineStages(tmpdir)
+            result = p.validate()
+            self.assertFalse(result.success)
+            self.assertEqual(result.stage, "validate")
+
+    def test_status_empty_dir(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            p = PipelineStages(tmpdir)
+            status = p.status()
+            self.assertIn("stages_completed", status)
+            self.assertEqual(len(status["stages_completed"]), 0)
+
+    def test_stage_result_to_dict(self):
+        result = StageResult(success=True, stage="test", metrics={"x": 1})
+        d = result.to_dict()
+        self.assertTrue(d["success"])
+        self.assertEqual(d["stage"], "test")
+        self.assertEqual(d["metrics"]["x"], 1)
 
 
 # =========================================================================
@@ -146,7 +167,6 @@ class TestMcpClient(unittest.TestCase):
         self.assertEqual(r2["id"], r1["id"] + 1)
 
     def test_call_tool_builds_correct_payload(self):
-        """Verify call_tool constructs the right JSON-RPC envelope."""
         client = McpClient()
         captured = {}
 
@@ -228,14 +248,11 @@ class TestMcpClient(unittest.TestCase):
         self.assertEqual(result.description, "the red car")
 
     def test_connection_error_raised(self):
-        # Use a port that is definitely not listening
         client = McpClient(
             endpoint="http://127.0.0.1:19999/mcp",
             max_retries=1, retry_delay=0.01,
         )
-        # ping() swallows errors and returns False
         self.assertFalse(client.ping())
-        # call_tool should raise on connection failure
         with self.assertRaises(McpConnectionError):
             client.call_tool("training.get_state")
 
@@ -268,7 +285,7 @@ class TestInputQuality(unittest.TestCase):
         config.ingest.blur_threshold = 100.0
         stats = FrameStats(
             frame_count=50,
-            blur_scores=[50.0] * 30 + [200.0] * 20,  # 60% blurry
+            blur_scores=[50.0] * 30 + [200.0] * 20,
             coverage_score=0.5,
         )
         result = assess_input_quality(stats, config)
@@ -351,40 +368,6 @@ class TestFinalQuality(unittest.TestCase):
         metrics = FinalMetrics(render_psnr=25.0, object_count=0)
         result = assess_final_quality(metrics, config)
         self.assertEqual(result.verdict, QualityVerdict.FAIL)
-
-
-# =========================================================================
-# Integration: orchestrator with mocked MCP
-# =========================================================================
-
-class TestOrchestratorIntegration(unittest.TestCase):
-
-    def test_partial_results_on_early_failure(self):
-        """If ingest fails, we still get partial results."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            orch = PipelineOrchestrator(
-                video_path="/nonexistent/video.mp4",
-                output_dir=tmpdir,
-                config=PipelineConfig(),
-            )
-            # Override max retries to speed up
-            orch.config.retry.max_retries = 0
-            status = orch.run()
-
-            self.assertEqual(status.state, PipelineState.FAILED.value)
-            self.assertIn("INGEST", status.stage_results)
-
-    def test_config_saved_with_orchestrator(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            config = PipelineConfig()
-            config.training.strategy = "default"
-            orch = PipelineOrchestrator(
-                video_path="/dev/null",
-                output_dir=tmpdir,
-                config=config,
-            )
-            self.assertEqual(orch.config.training.strategy, "default")
-            self.assertEqual(orch.config.output_dir, tmpdir)
 
 
 # =========================================================================

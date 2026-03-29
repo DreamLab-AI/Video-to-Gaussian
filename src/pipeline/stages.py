@@ -1,7 +1,23 @@
 # SPDX-FileCopyrightText: 2026 LichtFeld Studio Authors
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""Agentic state-machine orchestrator for the video-to-scene pipeline."""
+"""Independent pipeline stages callable by Claude Code or scripts.
+
+Each stage is a self-contained method that takes explicit inputs and returns
+explicit outputs as a dict. There is no hidden state, no state machine, and
+no automatic transitions. Claude Code (or any caller) decides what to run
+next based on the results.
+
+Usage from the terminal::
+
+    from pipeline.stages import PipelineStages
+    p = PipelineStages('/data/output/JOB_ID')
+    result = p.ingest('/data/output/JOB_ID/input.mp4', fps=2.0)
+    print(result)
+
+All heavy imports (torch, cv2, trimesh, etc.) are deferred to the methods
+that need them so that the module loads instantly.
+"""
 
 from __future__ import annotations
 
@@ -11,402 +27,296 @@ import os
 import shutil
 import subprocess
 import time
-from dataclasses import dataclass, field
-from enum import Enum
+from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any
 
 from pipeline.config import PipelineConfig
-from pipeline.mcp_client import McpClient, McpError, McpConnectionError
-from pipeline.quality_gates import (
-    FrameStats,
-    TrainingMetrics,
-    MeshMetrics,
-    RoundTripMetrics,
-    FinalMetrics,
-    QualityResult,
-    QualityVerdict,
-    assess_input_quality,
-    assess_training_quality,
-    assess_mesh_quality,
-    assess_roundtrip_quality,
-    assess_final_quality,
-)
 
 logger = logging.getLogger(__name__)
 
 
-class PipelineState(Enum):
-    """All possible pipeline states, ordered."""
-    IDLE = "IDLE"
-    INGEST = "INGEST"
-    REMOVE_PEOPLE = "REMOVE_PEOPLE"
-    SELECT_FRAMES = "SELECT_FRAMES"
-    RECONSTRUCT = "RECONSTRUCT"
-    QUALITY_GATE_1 = "QUALITY_GATE_1"
-    DECOMPOSE = "DECOMPOSE"
-    EXTRACT_OBJECTS = "EXTRACT_OBJECTS"
-    MESH_OBJECTS = "MESH_OBJECTS"
-    TEXTURE_BAKE = "TEXTURE_BAKE"
-    QUALITY_GATE_2 = "QUALITY_GATE_2"
-    INPAINT_BG = "INPAINT_BG"
-    RETRAIN_BG = "RETRAIN_BG"
-    USD_ASSEMBLE = "USD_ASSEMBLE"
-    VALIDATE = "VALIDATE"
-    DONE = "DONE"
-    FAILED = "FAILED"
+# ---------------------------------------------------------------------------
+# Stage names (ordered) -- used by the web UI for display
+# ---------------------------------------------------------------------------
+
+STAGE_NAMES: list[str] = [
+    "ingest",
+    "remove_people",
+    "select_frames",
+    "reconstruct",
+    "train",
+    "segment",
+    "extract_objects",
+    "mesh_objects",
+    "texture_bake",
+    "assemble_usd",
+    "validate",
+]
 
 
-# Ordered transitions: each state's successor on success.
-_TRANSITIONS: dict[PipelineState, PipelineState] = {
-    PipelineState.IDLE: PipelineState.INGEST,
-    PipelineState.INGEST: PipelineState.REMOVE_PEOPLE,
-    PipelineState.REMOVE_PEOPLE: PipelineState.SELECT_FRAMES,
-    PipelineState.SELECT_FRAMES: PipelineState.RECONSTRUCT,
-    PipelineState.RECONSTRUCT: PipelineState.QUALITY_GATE_1,
-    PipelineState.QUALITY_GATE_1: PipelineState.DECOMPOSE,
-    PipelineState.DECOMPOSE: PipelineState.EXTRACT_OBJECTS,
-    PipelineState.EXTRACT_OBJECTS: PipelineState.MESH_OBJECTS,
-    PipelineState.MESH_OBJECTS: PipelineState.TEXTURE_BAKE,
-    PipelineState.TEXTURE_BAKE: PipelineState.QUALITY_GATE_2,
-    PipelineState.QUALITY_GATE_2: PipelineState.INPAINT_BG,
-    PipelineState.INPAINT_BG: PipelineState.RETRAIN_BG,
-    PipelineState.RETRAIN_BG: PipelineState.USD_ASSEMBLE,
-    PipelineState.USD_ASSEMBLE: PipelineState.VALIDATE,
-    PipelineState.VALIDATE: PipelineState.DONE,
-}
-
+# ---------------------------------------------------------------------------
+# Result dataclass returned by every stage
+# ---------------------------------------------------------------------------
 
 @dataclass
 class StageResult:
     """Outcome of a single pipeline stage execution."""
     success: bool
-    state: PipelineState
+    stage: str
     metrics: dict[str, Any] = field(default_factory=dict)
     artifacts: dict[str, str] = field(default_factory=dict)
     error: str | None = None
-    quality: QualityResult | None = None
-    retry_hint: dict[str, Any] | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
 
 
-@dataclass
-class PipelineStatus:
-    """Serialisable pipeline progress."""
-    state: str = "IDLE"
-    progress: float = 0.0
-    stage_results: dict[str, dict[str, Any]] = field(default_factory=dict)
-    error: str | None = None
-    started_at: float = 0.0
-    finished_at: float | None = None
-    retries: dict[str, int] = field(default_factory=dict)
+# ---------------------------------------------------------------------------
+# Static helpers (carried over from old orchestrator)
+# ---------------------------------------------------------------------------
+
+def _load_ply_points(ply_path: str) -> tuple:
+    """Load points and colors from a PLY file (handles both 3DGS and standard PLYs).
+
+    Returns:
+        Tuple of (points: np.ndarray Nx3, colors: np.ndarray Nx3 or None)
+    """
+    import numpy as np
+
+    points = None
+    colors = None
+
+    # Try plyfile first (handles 3DGS PLYs with custom properties)
+    try:
+        from plyfile import PlyData
+        ply = PlyData.read(ply_path)
+        vertex = ply["vertex"]
+        x = np.asarray(vertex["x"])
+        y = np.asarray(vertex["y"])
+        z = np.asarray(vertex["z"])
+        points = np.column_stack([x, y, z])
+
+        for r_name, g_name, b_name in [
+            ("red", "green", "blue"),
+            ("f_dc_0", "f_dc_1", "f_dc_2"),
+        ]:
+            if r_name in vertex.data.dtype.names:
+                r = np.asarray(vertex[r_name])
+                g = np.asarray(vertex[g_name])
+                b = np.asarray(vertex[b_name])
+                c = np.column_stack([r, g, b])
+                if c.max() <= 1.0:
+                    c = (c * 255).clip(0, 255).astype(np.uint8)
+                elif c.max() > 255:
+                    c = ((c * 0.2822 + 0.5) * 255).clip(0, 255).astype(np.uint8)
+                colors = c
+                break
+
+        valid = np.isfinite(points).all(axis=1)
+        if not valid.all():
+            points = points[valid]
+            if colors is not None:
+                colors = colors[valid]
+
+        return points, colors
+    except Exception:
+        pass
+
+    # Fallback: trimesh
+    try:
+        import trimesh
+        loaded = trimesh.load(ply_path)
+        if hasattr(loaded, "vertices") and loaded.vertices is not None:
+            points = np.asarray(loaded.vertices)
+        elif hasattr(loaded, "points"):
+            points = np.asarray(loaded.points) if hasattr(loaded.points, '__len__') else None
+
+        if points is not None:
+            try:
+                if hasattr(loaded, "visual") and hasattr(loaded.visual, "vertex_colors"):
+                    vc = np.asarray(loaded.visual.vertex_colors)
+                    if vc.ndim == 2 and vc.shape[1] >= 3:
+                        colors = vc[:, :3]
+            except Exception:
+                pass
+
+            valid = np.isfinite(points).all(axis=1)
+            if not valid.all():
+                points = points[valid]
+                if colors is not None:
+                    colors = colors[valid]
+
+        return points, colors
+    except Exception:
+        pass
+
+    return None, None
 
 
-class PipelineOrchestrator:
-    """Drives the full video-to-scene pipeline as a state machine.
+def _mesh_with_open3d(ply_path: str, output_path: str) -> None:
+    """Fallback Poisson surface reconstruction using Open3D."""
+    import open3d as o3d
 
-    Each state maps to a handler method (_run_<state_name>). On success
-    the machine advances to the next state. On failure it retries with
-    adjusted parameters up to ``config.retry.max_retries`` times, then
-    emits partial results and moves to FAILED.
+    pcd = o3d.io.read_point_cloud(ply_path)
+    if not pcd.has_normals():
+        pcd.estimate_normals()
+    mesh, _ = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(pcd, depth=9)
+    o3d.io.write_triangle_mesh(output_path, mesh)
+
+
+def _write_minimal_usda(path: Path, meshes: list[dict[str, Any]]) -> None:
+    """Write a minimal USDA that references extracted meshes."""
+    lines = [
+        '#usda 1.0',
+        '(',
+        '    defaultPrim = "Scene"',
+        '    metersPerUnit = 1',
+        '    upAxis = "Y"',
+        ')',
+        '',
+        'def Xform "Scene"',
+        '{',
+    ]
+    for i, mesh in enumerate(meshes):
+        label = mesh.get("label", f"object_{i}").replace(" ", "_")
+        mesh_path = mesh.get("mesh", "")
+        lines.append(f'    def Xform "{label}"')
+        lines.append('    {')
+        lines.append(f'        # Reference: {mesh_path}')
+        lines.append(f'        custom string mesh:path = "{mesh_path}"')
+        lines.append('    }')
+    lines.append('}')
+    lines.append('')
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def _find_usd_python() -> Path | None:
+    """Locate a Python 3.11 interpreter with usd-core installed.
+
+    Checks well-known venv paths and the system python3.11 in order
+    of preference.
+    """
+    candidates = [
+        Path("/opt/venv-usd/bin/python3"),
+        Path.home() / "workspace" / "gaussians" / "LichtFeld-Studio" / ".venv-usd" / "bin" / "python3",
+        Path("/usr/bin/python3.11"),
+    ]
+    for p in candidates:
+        if not p.exists():
+            continue
+        try:
+            result = subprocess.run(
+                [str(p), "-c", "from pxr import Usd; print('ok')"],
+                capture_output=True, text=True, timeout=10,
+                env={**os.environ, "PYTHONPATH": ""},
+            )
+            if result.returncode == 0 and "ok" in result.stdout:
+                return p
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+    return None
+
+
+def _get_file_size_mb(path: Path) -> float:
+    try:
+        return path.stat().st_size / (1024 * 1024) if path.exists() else 0.0
+    except OSError:
+        return 0.0
+
+
+# ---------------------------------------------------------------------------
+# PipelineStages -- the main class
+# ---------------------------------------------------------------------------
+
+class PipelineStages:
+    """Individual pipeline stages callable by Claude Code or scripts.
+
+    Each method is self-contained, takes explicit inputs, returns explicit
+    outputs as a StageResult. No hidden state, no automatic transitions.
+    Claude Code calls them in sequence, inspecting results between each call.
     """
 
-    def __init__(
-        self,
-        video_path: str,
-        output_dir: str,
-        config: PipelineConfig | None = None,
-    ) -> None:
-        self.video_path = Path(video_path).resolve()
-        self.output_dir = Path(output_dir).resolve()
+    def __init__(self, job_dir: str, config: PipelineConfig | None = None) -> None:
+        self.job_dir = Path(job_dir)
         self.config = config or PipelineConfig()
-        self.config.output_dir = str(self.output_dir)
-
-        self.mcp = McpClient(
-            endpoint=self.config.mcp_endpoint,
-            timeout=self.config.mcp_timeout,
-            training_timeout=self.config.mcp_training_timeout,
-            max_retries=3,
-        )
-
-        self._state = PipelineState.IDLE
-        self._status = PipelineStatus()
-        self._artifacts: dict[str, str] = {}
-        self._stage_metrics: dict[str, dict[str, Any]] = {}
-        self._retry_counts: dict[str, int] = {}
-
-        # Intermediate data passed between stages.
-        self._frame_dir: Path | None = None
-        self._colmap_dir: Path | None = None
-        self._frame_stats: FrameStats | None = None
-        self._training_metrics: TrainingMetrics | None = None
-        self._trained_ply: Path | None = None
-        self._extracted_objects: list[dict[str, Any]] = []
-        self._mesh_results: list[dict[str, Any]] = []
-        self._person_manifest: dict[str, Any] | None = None
+        self.config.output_dir = str(self.job_dir)
 
     # ------------------------------------------------------------------
-    # Public API
+    # Stage 1: Ingest
     # ------------------------------------------------------------------
 
-    @property
-    def state(self) -> PipelineState:
-        return self._state
+    def ingest(self, video_path: str, fps: float = 2.0) -> StageResult:
+        """Extract frames from video.
 
-    def run(self) -> PipelineStatus:
-        """Execute the full pipeline from IDLE to DONE (or FAILED)."""
-        self._status.started_at = time.time()
-        self.output_dir.mkdir(parents=True, exist_ok=True)
-        self._advance(PipelineState.INGEST)
-
-        state_count = len(PipelineState) - 3  # exclude IDLE, DONE, FAILED
-        completed = 0
-
-        while self._state not in (PipelineState.DONE, PipelineState.FAILED):
-            handler = self._get_handler(self._state)
-            stage_name = self._state.value
-            logger.info("=== Stage: %s ===", stage_name)
-
-            result = self._execute_with_retries(handler, stage_name)
-            self._record_result(stage_name, result)
-
-            if result.success:
-                completed += 1
-                self._status.progress = completed / state_count
-                next_state = _TRANSITIONS.get(self._state)
-                if next_state:
-                    self._advance(next_state)
-                else:
-                    self._advance(PipelineState.DONE)
-            else:
-                logger.error("Stage %s failed: %s", stage_name, result.error)
-                self._status.error = f"Failed at {stage_name}: {result.error}"
-                self._advance(PipelineState.FAILED)
-
-            self._write_status()
-
-        self._status.finished_at = time.time()
-        self._status.state = self._state.value
-        self._write_status()
-        return self._status
-
-    def get_partial_results(self) -> dict[str, Any]:
-        """Return whatever artifacts have been produced so far."""
-        return {
-            "state": self._state.value,
-            "artifacts": dict(self._artifacts),
-            "metrics": dict(self._stage_metrics),
-        }
-
-    # ------------------------------------------------------------------
-    # State machine mechanics
-    # ------------------------------------------------------------------
-
-    def _advance(self, new_state: PipelineState) -> None:
-        logger.info("Transition: %s -> %s", self._state.value, new_state.value)
-        self._state = new_state
-        self._status.state = new_state.value
-
-    def _get_handler(self, state: PipelineState):
-        handlers = {
-            PipelineState.INGEST: self._run_ingest,
-            PipelineState.REMOVE_PEOPLE: self._run_remove_people,
-            PipelineState.SELECT_FRAMES: self._run_select_frames,
-            PipelineState.RECONSTRUCT: self._run_reconstruct,
-            PipelineState.QUALITY_GATE_1: self._run_quality_gate_1,
-            PipelineState.DECOMPOSE: self._run_decompose,
-            PipelineState.EXTRACT_OBJECTS: self._run_extract_objects,
-            PipelineState.MESH_OBJECTS: self._run_mesh_objects,
-            PipelineState.TEXTURE_BAKE: self._run_texture_bake,
-            PipelineState.QUALITY_GATE_2: self._run_quality_gate_2,
-            PipelineState.INPAINT_BG: self._run_inpaint_bg,
-            PipelineState.RETRAIN_BG: self._run_retrain_bg,
-            PipelineState.USD_ASSEMBLE: self._run_usd_assemble,
-            PipelineState.VALIDATE: self._run_validate,
-        }
-        return handlers[state]
-
-    def _execute_with_retries(self, handler, stage_name: str) -> StageResult:
-        max_retries = self.config.retry.max_retries
-        attempts = self._retry_counts.get(stage_name, 0)
-
-        for attempt in range(attempts, max_retries + 1):
-            self._retry_counts[stage_name] = attempt
-            self._status.retries[stage_name] = attempt
-
-            if attempt > 0:
-                self._apply_retry_adjustments(stage_name, attempt)
-                logger.info("Retry %d/%d for stage %s", attempt, max_retries, stage_name)
-
-            try:
-                result = handler()
-            except (McpError, McpConnectionError) as exc:
-                result = StageResult(
-                    success=False,
-                    state=self._state,
-                    error=str(exc),
-                )
-            except Exception as exc:
-                logger.exception("Unexpected error in stage %s", stage_name)
-                result = StageResult(
-                    success=False,
-                    state=self._state,
-                    error=f"Unexpected: {exc}",
-                )
-
-            if result.success:
-                return result
-
-            if attempt >= max_retries:
-                return result
-
-        return result  # type: ignore[possibly-undefined]
-
-    def _apply_retry_adjustments(self, stage_name: str, attempt: int) -> None:
-        key = f"{stage_name}:{attempt}" if attempt > 1 else stage_name
-        adjustments = self.config.retry.parameter_adjustments.get(key, {})
-        if not adjustments:
-            adjustments = self.config.retry.parameter_adjustments.get(stage_name, {})
-
-        for param, value in adjustments.items():
-            for sub_cfg in [
-                self.config.ingest, self.config.reconstruct,
-                self.config.training, self.config.mesh,
-                self.config.inpaint,
-            ]:
-                if hasattr(sub_cfg, param):
-                    old = getattr(sub_cfg, param)
-                    setattr(sub_cfg, param, value)
-                    logger.info("Retry adjustment: %s = %s (was %s)", param, value, old)
-
-    def _record_result(self, stage_name: str, result: StageResult) -> None:
-        entry: dict[str, Any] = {
-            "success": result.success,
-            "metrics": result.metrics,
-            "artifacts": result.artifacts,
-        }
-        if result.error:
-            entry["error"] = result.error
-        if result.quality:
-            entry["quality"] = {
-                "verdict": result.quality.verdict.value,
-                "gate": result.quality.gate_name,
-                "metrics": result.quality.metrics,
-                "recommendation": result.quality.recommendation,
-            }
-        self._status.stage_results[stage_name] = entry
-        self._stage_metrics[stage_name] = result.metrics
-        self._artifacts.update(result.artifacts)
-
-    def _write_status(self) -> None:
-        path = self.output_dir / self.config.status_file
-        try:
-            path.write_text(
-                json.dumps({
-                    "state": self._status.state,
-                    "progress": self._status.progress,
-                    "error": self._status.error,
-                    "started_at": self._status.started_at,
-                    "finished_at": self._status.finished_at,
-                    "retries": self._status.retries,
-                    "stage_results": self._status.stage_results,
-                }, indent=2, default=str),
-                encoding="utf-8",
-            )
-        except OSError as exc:
-            logger.warning("Could not write status file: %s", exc)
-
-    # ------------------------------------------------------------------
-    # Stage implementations
-    # ------------------------------------------------------------------
-
-    def _run_ingest(self) -> StageResult:
-        """Extract frames from the source video using ffmpeg."""
-        if not self.video_path.exists():
+        Returns: {frames_dir, frame_count}
+        """
+        video = Path(video_path)
+        if not video.exists():
             return StageResult(
-                success=False, state=self._state,
-                error=f"Video not found: {self.video_path}",
+                success=False, stage="ingest",
+                error=f"Video not found: {video_path}",
             )
 
-        frame_dir = self.output_dir / "frames"
+        frame_dir = self.job_dir / "frames"
         frame_dir.mkdir(parents=True, exist_ok=True)
 
         cmd = [
             "ffmpeg", "-y",
-            "-i", str(self.video_path),
-            "-vf", f"fps={self.config.ingest.fps}",
+            "-i", str(video),
+            "-vf", f"fps={fps}",
             "-q:v", "2",
             str(frame_dir / "frame_%05d.jpg"),
         ]
 
         try:
-            proc = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=300,
-            )
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         except FileNotFoundError:
-            return StageResult(
-                success=False, state=self._state,
-                error="ffmpeg not found in PATH",
-            )
+            return StageResult(success=False, stage="ingest", error="ffmpeg not found in PATH")
         except subprocess.TimeoutExpired:
-            return StageResult(
-                success=False, state=self._state,
-                error="Frame extraction timed out (300s)",
-            )
+            return StageResult(success=False, stage="ingest", error="Frame extraction timed out (300s)")
 
         if proc.returncode != 0:
             return StageResult(
-                success=False, state=self._state,
+                success=False, stage="ingest",
                 error=f"ffmpeg failed (rc={proc.returncode}): {proc.stderr[:500]}",
             )
 
         frames = sorted(frame_dir.glob("*.jpg"))
-        self._frame_dir = frame_dir
-
-        stats = FrameStats(
-            frame_count=len(frames),
-            blur_scores=[],  # Would be computed by cv2 if available
-            exposure_values=[],
-            resolutions=[],
-            coverage_score=0.5,  # Placeholder; real impl uses feature matching
-        )
-        self._frame_stats = stats
-
-        quality = assess_input_quality(stats, self.config)
-        if quality.verdict == QualityVerdict.FAIL:
-            return StageResult(
-                success=False, state=self._state,
-                error=quality.recommendation,
-                quality=quality,
-                metrics=quality.metrics,
-            )
-
         return StageResult(
-            success=True, state=self._state,
-            metrics=quality.metrics,
+            success=True, stage="ingest",
+            metrics={"frame_count": len(frames), "fps": fps},
             artifacts={"frames_dir": str(frame_dir), "frame_count": str(len(frames))},
-            quality=quality,
         )
 
-    def _run_remove_people(self) -> StageResult:
-        """Detect and remove people from frames before COLMAP processing."""
-        if self._frame_dir is None:
+    # ------------------------------------------------------------------
+    # Stage 2: Remove people
+    # ------------------------------------------------------------------
+
+    def remove_people(self, frames_dir: str) -> StageResult:
+        """Detect and remove people from frames.
+
+        Returns: {cleaned_dir, manifest}
+        """
+        frames_path = Path(frames_dir)
+        if not frames_path.exists():
             return StageResult(
-                success=False, state=self._state,
-                error="No frames directory from ingest stage",
+                success=False, stage="remove_people",
+                error=f"Frames directory not found: {frames_dir}",
             )
 
         cfg = self.config.person_removal
         if not cfg.enabled:
             logger.info("Person removal disabled, skipping")
             return StageResult(
-                success=True, state=self._state,
+                success=True, stage="remove_people",
                 metrics={"skipped": True},
-                artifacts={"cleaned_frames_dir": str(self._frame_dir)},
+                artifacts={"cleaned_frames_dir": frames_dir},
             )
 
         from pipeline.person_remover import PersonRemover
 
-        cleaned_dir = self.output_dir / "frames_cleaned"
+        cleaned_dir = self.job_dir / "frames_cleaned"
         remover = PersonRemover(
             method=cfg.method,
             comfyui_url=cfg.comfyui_url or None,
@@ -419,12 +329,10 @@ class PipelineOrchestrator:
         )
 
         try:
-            manifest = remover.process_directory(
-                str(self._frame_dir), str(cleaned_dir),
-            )
+            manifest = remover.process_directory(frames_dir, str(cleaned_dir))
         except Exception as exc:
             return StageResult(
-                success=False, state=self._state,
+                success=False, stage="remove_people",
                 error=f"Person removal failed: {exc}",
             )
 
@@ -433,55 +341,38 @@ class PipelineOrchestrator:
 
         if remaining < self.config.ingest.min_frames:
             return StageResult(
-                success=False, state=self._state,
-                error=(
-                    f"Too few frames after person removal: {remaining} "
-                    f"(need {self.config.ingest.min_frames}). "
-                    f"{summary.get('dropped', 0)} frames were dropped."
-                ),
-                metrics=manifest.get("summary", {}),
+                success=False, stage="remove_people",
+                error=f"Too few frames after person removal: {remaining} (need {self.config.ingest.min_frames})",
+                metrics=summary,
             )
 
-        # Store manifest for frame selection stage
-        self._person_manifest = manifest
-
-        # Point subsequent stages at the cleaned frames
-        self._frame_dir = cleaned_dir
-        self._artifacts["cleaned_frames_dir"] = str(cleaned_dir)
-        self._artifacts["person_removal_manifest"] = str(
-            cleaned_dir / "person_removal_manifest.json"
-        )
-
+        manifest_path = cleaned_dir / "person_removal_manifest.json"
         return StageResult(
-            success=True, state=self._state,
-            metrics={
-                "total_frames": manifest.get("total_frames", 0),
-                "remaining_frames": remaining,
-                **summary,
-            },
-            artifacts={
-                "cleaned_frames_dir": str(cleaned_dir),
-                "person_removal_manifest": str(
-                    cleaned_dir / "person_removal_manifest.json"
-                ),
-            },
+            success=True, stage="remove_people",
+            metrics={"total_frames": manifest.get("total_frames", 0), "remaining_frames": remaining, **summary},
+            artifacts={"cleaned_frames_dir": str(cleaned_dir), "manifest": str(manifest_path)},
         )
 
-    def _run_select_frames(self) -> StageResult:
-        """Score, filter, and select the best frame subset for COLMAP."""
-        if self._frame_dir is None:
+    # ------------------------------------------------------------------
+    # Stage 3: Select frames
+    # ------------------------------------------------------------------
+
+    def select_frames(self, frames_dir: str, target: int = 150) -> StageResult:
+        """Select best frames for COLMAP.
+
+        Returns: {selected_dir, count}
+        """
+        frames_path = Path(frames_dir)
+        if not frames_path.exists():
             return StageResult(
-                success=False, state=self._state,
-                error="No frames directory from previous stage",
+                success=False, stage="select_frames",
+                error=f"Frames directory not found: {frames_dir}",
             )
 
         from pipeline.frame_selector import FrameSelector, SelectionConfig
 
         sel_cfg = SelectionConfig(
-            target_frames=min(
-                self.config.ingest.max_frames,
-                max(self.config.ingest.min_frames, 150),
-            ),
+            target_frames=min(self.config.ingest.max_frames, max(self.config.ingest.min_frames, target)),
             min_frames=self.config.ingest.min_frames,
             max_frames=self.config.ingest.max_frames,
             blur_threshold=self.config.ingest.blur_threshold,
@@ -489,65 +380,64 @@ class PipelineOrchestrator:
         selector = FrameSelector(config=sel_cfg)
 
         try:
-            scores = selector.score_frames(str(self._frame_dir))
+            scores = selector.score_frames(frames_dir)
         except Exception as exc:
             logger.warning("Frame scoring failed (%s), keeping all frames", exc)
             return StageResult(
-                success=True, state=self._state,
+                success=True, stage="select_frames",
                 metrics={"skipped": True, "reason": str(exc)},
-                artifacts={"selected_frames_dir": str(self._frame_dir)},
+                artifacts={"selected_frames_dir": frames_dir},
             )
 
         if not scores:
             return StageResult(
-                success=False, state=self._state,
-                error=f"No frames found in {self._frame_dir}",
+                success=False, stage="select_frames",
+                error=f"No frames found in {frames_dir}",
             )
 
-        selected = selector.select(scores, person_manifest=self._person_manifest)
+        selected = selector.select(scores)
 
         if len(selected) < self.config.ingest.min_frames:
             return StageResult(
-                success=False, state=self._state,
-                error=(
-                    f"Only {len(selected)} frames after selection "
-                    f"(need {self.config.ingest.min_frames})"
-                ),
+                success=False, stage="select_frames",
+                error=f"Only {len(selected)} frames after selection (need {self.config.ingest.min_frames})",
                 metrics={"scored": len(scores), "selected": len(selected)},
             )
 
-        selected_dir = self.output_dir / "frames_selected"
-        selected_paths = selector.copy_selected(selected, str(selected_dir))
-
-        # Update frame_dir for downstream stages
-        self._frame_dir = selected_dir
+        selected_dir = self.job_dir / "frames_selected"
+        selector.copy_selected(selected, str(selected_dir))
 
         return StageResult(
-            success=True, state=self._state,
-            metrics={
-                "scored": len(scores),
-                "selected": len(selected),
-                "target": sel_cfg.target_frames,
-            },
-            artifacts={"selected_frames_dir": str(selected_dir)},
+            success=True, stage="select_frames",
+            metrics={"scored": len(scores), "selected": len(selected), "target": sel_cfg.target_frames},
+            artifacts={"selected_frames_dir": str(selected_dir), "count": str(len(selected))},
         )
 
-    def _run_reconstruct(self) -> StageResult:
-        """Run SplatReady / COLMAP reconstruction, then load into LichtFeld."""
-        if self._frame_dir is None:
+    # ------------------------------------------------------------------
+    # Stage 4: Reconstruct (COLMAP SfM)
+    # ------------------------------------------------------------------
+
+    def reconstruct(self, frames_dir: str) -> StageResult:
+        """Run COLMAP SfM reconstruction.
+
+        Returns: {colmap_dir, cameras, points}
+        """
+        frames_path = Path(frames_dir)
+        if not frames_path.exists():
             return StageResult(
-                success=False, state=self._state,
-                error="No frames directory from ingest stage",
+                success=False, stage="reconstruct",
+                error=f"Frames directory not found: {frames_dir}",
             )
 
-        colmap_dir = self.output_dir / "colmap"
+        colmap_dir = self.job_dir / "colmap"
         colmap_dir.mkdir(parents=True, exist_ok=True)
 
+        # Try SplatReady first
         splatready_config = {
-            "video_path": str(self.video_path),
-            "base_output_folder": str(self.output_dir),
+            "video_path": "",
+            "base_output_folder": str(self.job_dir),
             "frame_rate": self.config.ingest.fps,
-            "skip_extraction": True,  # Frames already extracted
+            "skip_extraction": True,
             "reconstruction_method": self.config.reconstruct.method,
             "colmap_exe_path": self.config.reconstruct.colmap_exe,
             "use_fisheye": self.config.reconstruct.use_fisheye,
@@ -556,7 +446,7 @@ class PipelineOrchestrator:
             "skip_reconstruction": False,
         }
 
-        config_path = self.output_dir / "splatready_config.json"
+        config_path = self.job_dir / "splatready_config.json"
         config_path.write_text(json.dumps(splatready_config, indent=2), encoding="utf-8")
 
         plugin_dir = Path.home() / ".lichtfeld" / "plugins" / "splat_ready"
@@ -570,132 +460,49 @@ class PipelineOrchestrator:
                 )
                 if proc.returncode != 0:
                     return StageResult(
-                        success=False, state=self._state,
+                        success=False, stage="reconstruct",
                         error=f"SplatReady failed: {proc.stderr[:500]}",
                     )
             except subprocess.TimeoutExpired:
                 return StageResult(
-                    success=False, state=self._state,
+                    success=False, stage="reconstruct",
                     error="COLMAP reconstruction timed out",
                 )
         else:
             # Fallback: run COLMAP directly
             try:
-                self._run_colmap_direct(colmap_dir)
+                self._run_colmap_direct(colmap_dir, frames_path)
             except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired) as exc:
                 return StageResult(
-                    success=False, state=self._state,
+                    success=False, stage="reconstruct",
                     error=f"COLMAP failed: {exc}",
                 )
 
-        dataset_dir = self.output_dir / "colmap" / "undistorted"
+        dataset_dir = colmap_dir / "undistorted"
         if not dataset_dir.exists():
-            # Check alternative locations
-            for alt in [colmap_dir, self.output_dir / "colmap"]:
+            for alt in [colmap_dir, self.job_dir / "colmap"]:
                 if (alt / "images").exists() and (alt / "sparse").exists():
                     dataset_dir = alt
                     break
             else:
                 return StageResult(
-                    success=False, state=self._state,
-                    error=f"COLMAP output not found at expected paths",
+                    success=False, stage="reconstruct",
+                    error="COLMAP output not found at expected paths",
                 )
 
-        self._colmap_dir = dataset_dir
-
-        # Train via CLI (headless) — no MCP needed
-        model_dir = self.output_dir / "model"
-        model_dir.mkdir(parents=True, exist_ok=True)
-
-        lfs_binary = self.config.training.lichtfeld_binary
-        if not Path(lfs_binary).exists():
-            # Try common locations
-            for candidate in [
-                "/opt/gaussian-toolkit/build/LichtFeld-Studio",
-                "/usr/local/bin/lichtfeld-studio",
-                str(Path.home() / "workspace/gaussians/LichtFeld-Studio/build/LichtFeld-Studio"),
-            ]:
-                if Path(candidate).exists():
-                    lfs_binary = candidate
-                    break
-
-        if Path(lfs_binary).exists():
-            train_cmd = [
-                lfs_binary, "--headless",
-                "--data-path", str(dataset_dir),
-                "--output-path", str(model_dir),
-                "--iter", str(self.config.training.iterations),
-                "--strategy", self.config.training.strategy,
-                "--sh-degree", str(self.config.training.sh_degree),
-                "--log-level", "info",
-            ]
-            logger.info("Training via CLI: %s", " ".join(train_cmd))
-            try:
-                proc = subprocess.run(
-                    train_cmd, capture_output=True, text=True,
-                    timeout=3600,
-                    env={**os.environ, "LD_LIBRARY_PATH": f"{Path(lfs_binary).parent}:{os.environ.get('LD_LIBRARY_PATH', '')}"},
-                )
-                if proc.returncode != 0:
-                    logger.warning("Training stderr: %s", proc.stderr[-500:] if proc.stderr else "none")
-            except subprocess.TimeoutExpired:
-                return StageResult(
-                    success=False, state=self._state,
-                    error="Training timed out (3600s)",
-                )
-        else:
-            logger.warning("LichtFeld binary not found at %s, skipping training", lfs_binary)
-
-        # Find trained PLY
-        ply_files = sorted(model_dir.rglob("*.ply"))
-        if ply_files:
-            self._trained_ply = ply_files[-1]
-            logger.info("Trained model: %s", self._trained_ply)
-        else:
-            self._trained_ply = None
-            logger.warning("No PLY output from training")
-
-        # Also try MCP if server is running
-        try:
-            load_result = self.mcp.load_dataset(
-                path=str(dataset_dir),
-                max_iterations=self.config.training.iterations,
-                strategy=self.config.training.strategy,
-            )
-            self.mcp.training_start()
-        except Exception as exc:
-            logger.info("MCP not available (expected in headless Docker): %s", exc)
-
-        # Check for training output (CLI or MCP)
-        if self._trained_ply and self._trained_ply.exists():
-            # CLI training succeeded — use PLY as proof
-            logger.info("CLI training completed, PLY: %s (%.0f MB)",
-                        self._trained_ply, self._trained_ply.stat().st_size / 1024 / 1024)
-            return StageResult(
-                success=True, state=self._state,
-                metrics={"trained_ply": str(self._trained_ply), "method": "cli_headless"},
-                artifacts={"dataset_dir": str(dataset_dir), "trained_ply": str(self._trained_ply)},
-            )
-
-        # Try MCP wait if no CLI output
-        self._training_metrics = None
-        try:
-            final_state = self.mcp.wait_training_complete(poll_interval=10.0)
-            return StageResult(
-                success=True, state=self._state,
-                metrics={"psnr": final_state.psnr, "ssim": final_state.ssim,
-                         "iterations": final_state.iteration, "num_gaussians": final_state.num_gaussians},
-                artifacts={"dataset_dir": str(dataset_dir)},
-            )
-        except Exception as exc:
-            logger.warning("MCP wait failed: %s", exc)
+        # Count cameras / points if available
+        sparse_dir = dataset_dir / "sparse" / "0"
+        cameras = len(list(sparse_dir.glob("cameras.*"))) if sparse_dir.exists() else 0
+        points_file = sparse_dir / "points3D.bin" if sparse_dir.exists() else None
+        points_size = _get_file_size_mb(points_file) if points_file else 0.0
 
         return StageResult(
-            success=False, state=self._state,
-            error="No training output found (no PLY from CLI, no MCP connection)",
+            success=True, stage="reconstruct",
+            metrics={"colmap_dir": str(dataset_dir), "cameras_found": cameras, "points_size_mb": points_size},
+            artifacts={"colmap_dir": str(dataset_dir)},
         )
 
-    def _run_colmap_direct(self, output_dir: Path) -> None:
+    def _run_colmap_direct(self, output_dir: Path, frame_dir: Path) -> None:
         """Fallback: run COLMAP feature extraction + matching + mapper."""
         db_path = output_dir / "database.db"
         sparse_dir = output_dir / "sparse"
@@ -706,7 +513,7 @@ class PipelineOrchestrator:
         subprocess.run([
             colmap, "feature_extractor",
             "--database_path", str(db_path),
-            "--image_path", str(self._frame_dir),
+            "--image_path", str(frame_dir),
             "--ImageReader.single_camera", "1",
         ], check=True, capture_output=True, timeout=300)
 
@@ -718,418 +525,405 @@ class PipelineOrchestrator:
         subprocess.run([
             colmap, "mapper",
             "--database_path", str(db_path),
-            "--image_path", str(self._frame_dir),
+            "--image_path", str(frame_dir),
             "--output_path", str(sparse_dir),
             "--Mapper.multiple_models", "0",
         ], check=True, capture_output=True, timeout=1800)
 
-        # Undistort images
         undist_dir = output_dir / "undistorted"
         subprocess.run([
             colmap, "image_undistorter",
-            "--image_path", str(self._frame_dir),
+            "--image_path", str(frame_dir),
             "--input_path", str(sparse_dir / "0"),
             "--output_path", str(undist_dir),
             "--output_type", "COLMAP",
         ], check=True, capture_output=True, timeout=300)
 
-        # Fix sparse/0 layout if needed (undistorter puts sparse/ flat)
         undist_sparse = undist_dir / "sparse"
         if undist_sparse.exists() and not (undist_sparse / "0").exists():
-            import shutil
             (undist_sparse / "0").mkdir(exist_ok=True)
             for f in undist_sparse.glob("*.bin"):
                 shutil.move(str(f), str(undist_sparse / "0" / f.name))
 
-    def _run_quality_gate_1(self) -> StageResult:
-        """Evaluate training quality. Decide whether to proceed or retry."""
-        if self._training_metrics is None:
-            # CLI headless training doesn't provide metrics — pass if PLY exists
-            if self._trained_ply and Path(self._trained_ply).exists():
-                logger.info("Quality Gate 1: PASS (CLI mode, PLY exists: %s)", self._trained_ply)
-                return StageResult(
-                    success=True, state=self._state,
-                    metrics={"method": "cli_headless", "ply_exists": True},
-                )
+    # ------------------------------------------------------------------
+    # Stage 5: Train (Gaussian splatting)
+    # ------------------------------------------------------------------
+
+    def train(self, colmap_dir: str, iterations: int = 30000) -> StageResult:
+        """Run LichtFeld headless training.
+
+        Returns: {ply_path, loss}
+        """
+        dataset_dir = Path(colmap_dir)
+        if not dataset_dir.exists():
             return StageResult(
-                success=False, state=self._state,
-                error="No training metrics and no PLY output",
+                success=False, stage="train",
+                error=f"COLMAP directory not found: {colmap_dir}",
             )
 
-        quality = assess_training_quality(self._training_metrics, self.config)
-        logger.info(
-            "Quality Gate 1: %s (PSNR=%.2f, SSIM=%.4f)",
-            quality.verdict.value,
-            self._training_metrics.psnr,
-            self._training_metrics.ssim,
-        )
+        model_dir = self.job_dir / "model"
+        model_dir.mkdir(parents=True, exist_ok=True)
 
-        if quality.verdict == QualityVerdict.FAIL:
+        lfs_binary = self.config.training.lichtfeld_binary
+        if not Path(lfs_binary).exists():
+            for candidate in [
+                "/opt/gaussian-toolkit/build/LichtFeld-Studio",
+                "/usr/local/bin/lichtfeld-studio",
+                str(Path.home() / "workspace/gaussians/LichtFeld-Studio/build/LichtFeld-Studio"),
+            ]:
+                if Path(candidate).exists():
+                    lfs_binary = candidate
+                    break
+
+        if not Path(lfs_binary).exists():
             return StageResult(
-                success=False, state=self._state,
-                error=quality.recommendation,
-                quality=quality,
-                metrics=quality.metrics,
-                retry_hint={"increase_iterations": True},
+                success=False, stage="train",
+                error=f"LichtFeld binary not found at {lfs_binary}",
             )
+
+        strategy = self.config.training.strategy
+        sh_degree = self.config.training.sh_degree
+
+        train_cmd = [
+            lfs_binary, "--headless",
+            "--data-path", str(dataset_dir),
+            "--output-path", str(model_dir),
+            "--iter", str(iterations),
+            "--strategy", strategy,
+            "--sh-degree", str(sh_degree),
+            "--log-level", "info",
+        ]
+        logger.info("Training: %s", " ".join(train_cmd))
+
+        try:
+            proc = subprocess.run(
+                train_cmd, capture_output=True, text=True,
+                timeout=3600,
+                env={**os.environ, "LD_LIBRARY_PATH": f"{Path(lfs_binary).parent}:{os.environ.get('LD_LIBRARY_PATH', '')}"},
+            )
+            if proc.returncode != 0:
+                logger.warning("Training stderr: %s", proc.stderr[-500:] if proc.stderr else "none")
+        except subprocess.TimeoutExpired:
+            return StageResult(success=False, stage="train", error="Training timed out (3600s)")
+
+        # Find trained PLY
+        ply_files = sorted(model_dir.rglob("*.ply"))
+        if not ply_files:
+            return StageResult(
+                success=False, stage="train",
+                error="No PLY output from training",
+                metrics={"stderr_tail": (proc.stderr or "")[-300:]},
+            )
+
+        ply_path = ply_files[-1]
+        ply_size_mb = _get_file_size_mb(ply_path)
 
         return StageResult(
-            success=True, state=self._state,
-            metrics=quality.metrics,
-            quality=quality,
+            success=True, stage="train",
+            metrics={
+                "ply_path": str(ply_path),
+                "ply_size_mb": round(ply_size_mb, 1),
+                "iterations": iterations,
+                "strategy": strategy,
+            },
+            artifacts={"ply_path": str(ply_path), "model_dir": str(model_dir)},
         )
 
-    def _run_decompose(self) -> StageResult:
-        """Use SAM3 concept segmentation or MCP semantic selection to identify scene objects."""
-        decompose_cfg = self.config.decompose
+    # ------------------------------------------------------------------
+    # Stage 6: Segment (SAM2/SAM3)
+    # ------------------------------------------------------------------
 
-        # --- SAM3 concept segmentation path ---
-        if decompose_cfg.use_sam3 and self._frame_dir is not None:
-            try:
-                return self._run_decompose_sam3()
-            except Exception as exc:
-                if decompose_cfg.sam3_fallback_to_sam2:
-                    logger.warning(
-                        "SAM3 decomposition failed (%s), falling back to MCP selection", exc,
-                    )
-                else:
-                    return StageResult(
-                        success=False, state=self._state,
-                        error=f"SAM3 decomposition failed: {exc}",
-                    )
+    def segment(self, ply_path: str, frames_dir: str) -> StageResult:
+        """SAM2/SAM3 segmentation + mask projection.
 
-        # --- Legacy MCP description-based path ---
-        descriptions = decompose_cfg.descriptions
-        if not descriptions:
-            try:
-                advice = self.mcp.ask_advisor(
-                    "What are the main objects in this scene? "
-                    "List them as comma-separated short descriptions."
-                )
-                descriptions = [d.strip() for d in advice.split(",") if d.strip()]
-            except Exception:
-                descriptions = []
-
-        if not descriptions:
-            logger.info("No object descriptions; skipping decomposition")
-            self._extracted_objects = [{"label": "full_scene", "count": -1}]
-            return StageResult(
-                success=True, state=self._state,
-                metrics={"object_count": 1},
-                artifacts={},
-            )
-
-        objects: list[dict[str, Any]] = []
-        for desc in descriptions:
-            try:
-                sel = self.mcp.selection_by_description(desc)
-                if sel.count >= decompose_cfg.min_object_gaussians:
-                    objects.append({"label": desc, "count": sel.count})
-                else:
-                    logger.info("Skipping '%s': only %d gaussians", desc, sel.count)
-            except Exception as exc:
-                logger.warning("Selection failed for '%s': %s", desc, exc)
-
-        if not objects:
-            objects = [{"label": "full_scene", "count": -1}]
-
-        self._extracted_objects = objects
-        return StageResult(
-            success=True, state=self._state,
-            metrics={"object_count": len(objects)},
-            artifacts={"objects": json.dumps(objects)},
-        )
-
-    def _run_decompose_sam3(self) -> StageResult:
-        """SAM3-based scene decomposition using text concept segmentation."""
+        Returns: {objects: list[{label, object_id, mask_pixels}], masks_dir}
+        """
         import cv2
-        from pipeline.sam3_segmentor import SAM3Segmentor
 
-        decompose_cfg = self.config.decompose
-        concepts = decompose_cfg.sam3_concepts
-        if not concepts:
-            concepts = decompose_cfg.descriptions or [
-                "paintings", "frames", "sculptures", "furniture",
-                "walls", "floor", "ceiling", "fixtures", "doorways",
-            ]
+        frames_path = Path(frames_dir)
+        if not frames_path.exists():
+            return StageResult(
+                success=False, stage="segment",
+                error=f"Frames directory not found: {frames_dir}",
+            )
 
-        logger.info("SAM3 decompose: concepts=%s, frame_dir=%s", concepts, self._frame_dir)
-
-        seg = SAM3Segmentor(
-            device="cuda",
-            confidence_threshold=decompose_cfg.sam3_confidence_threshold,
-        )
-
-        # Segment the first frame to identify objects
         frame_paths = sorted(
-            p for p in self._frame_dir.iterdir()
+            p for p in frames_path.iterdir()
             if p.suffix.lower() in (".jpg", ".jpeg", ".png")
         )
         if not frame_paths:
             return StageResult(
-                success=False, state=self._state,
-                error=f"No frames found in {self._frame_dir}",
+                success=False, stage="segment",
+                error=f"No frames found in {frames_dir}",
             )
 
-        image = cv2.imread(str(frame_paths[0]))
-        if image is None:
-            return StageResult(
-                success=False, state=self._state,
-                error=f"Failed to read frame {frame_paths[0]}",
-            )
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        decompose_cfg = self.config.decompose
+        concepts = decompose_cfg.sam3_concepts or decompose_cfg.descriptions or [
+            "paintings", "frames", "sculptures", "furniture",
+            "walls", "floor", "ceiling", "fixtures", "doorways",
+        ]
 
-        result, id_to_concept = seg.segment_by_concepts(
-            image, concepts,
-            confidence_threshold=decompose_cfg.sam3_confidence_threshold,
-        )
+        # Try SAM3 first
+        if decompose_cfg.use_sam3:
+            try:
+                from pipeline.sam3_segmentor import SAM3Segmentor
+                import numpy as np
 
-        objects: list[dict[str, Any]] = []
-        for obj_id in result.object_ids:
-            concept = id_to_concept.get(int(obj_id), "unknown")
-            mask_pixels = int(result.masks[result.object_ids == obj_id].sum())
-            objects.append({
-                "label": concept,
-                "object_id": int(obj_id),
-                "mask_pixels": mask_pixels,
-            })
+                seg = SAM3Segmentor(
+                    device="cuda",
+                    confidence_threshold=decompose_cfg.sam3_confidence_threshold,
+                )
 
-        if not objects:
-            objects = [{"label": "full_scene", "count": -1}]
+                image = cv2.imread(str(frame_paths[0]))
+                if image is None:
+                    return StageResult(
+                        success=False, stage="segment",
+                        error=f"Failed to read frame {frame_paths[0]}",
+                    )
+                image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
-        # Save SAM3 masks for downstream stages
-        masks_dir = self.output_dir / "sam3_masks"
-        masks_dir.mkdir(parents=True, exist_ok=True)
-        import numpy as np
-        for i, obj_id in enumerate(result.object_ids):
-            mask_path = masks_dir / f"mask_{int(obj_id):04d}.npy"
-            np.save(str(mask_path), result.masks[i])
+                result, id_to_concept = seg.segment_by_concepts(
+                    image, concepts,
+                    confidence_threshold=decompose_cfg.sam3_confidence_threshold,
+                )
 
-        seg.unload()
+                objects: list[dict[str, Any]] = []
+                for obj_id in result.object_ids:
+                    concept = id_to_concept.get(int(obj_id), "unknown")
+                    mask_pixels = int(result.masks[result.object_ids == obj_id].sum())
+                    objects.append({
+                        "label": concept,
+                        "object_id": int(obj_id),
+                        "mask_pixels": mask_pixels,
+                    })
 
-        self._extracted_objects = objects
+                # Save masks
+                masks_dir = self.job_dir / "sam3_masks"
+                masks_dir.mkdir(parents=True, exist_ok=True)
+                for i, obj_id in enumerate(result.object_ids):
+                    mask_path = masks_dir / f"mask_{int(obj_id):04d}.npy"
+                    np.save(str(mask_path), result.masks[i])
+
+                seg.unload()
+
+                if not objects:
+                    objects = [{"label": "full_scene", "count": -1}]
+
+                return StageResult(
+                    success=True, stage="segment",
+                    metrics={
+                        "object_count": len(objects),
+                        "method": "sam3",
+                        "concepts": concepts,
+                    },
+                    artifacts={
+                        "objects": json.dumps(objects),
+                        "masks_dir": str(masks_dir),
+                    },
+                )
+            except Exception as exc:
+                if not decompose_cfg.sam3_fallback_to_sam2:
+                    return StageResult(
+                        success=False, stage="segment",
+                        error=f"SAM3 segmentation failed: {exc}",
+                    )
+                logger.warning("SAM3 failed (%s), falling back to full-scene", exc)
+
+        # Fallback: treat entire scene as one object
         return StageResult(
-            success=True, state=self._state,
-            metrics={
-                "object_count": len(objects),
-                "segmentation_method": "sam3",
-                "concepts_used": concepts,
-            },
-            artifacts={
-                "objects": json.dumps(objects),
-                "sam3_masks_dir": str(masks_dir),
-            },
+            success=True, stage="segment",
+            metrics={"object_count": 1, "method": "full_scene"},
+            artifacts={"objects": json.dumps([{"label": "full_scene", "count": -1}])},
         )
 
-    def _run_extract_objects(self) -> StageResult:
-        """Extract each identified object as a separate PLY.
+    # ------------------------------------------------------------------
+    # Stage 7: Extract objects
+    # ------------------------------------------------------------------
 
-        In headless Docker mode (no MCP), uses the trained PLY from
-        self._trained_ply and SAM3 masks (if available) to extract
-        per-object point clouds via file-based operations.
+    def extract_objects(self, ply_path: str, labels: dict | list | str | None = None) -> StageResult:
+        """Extract per-object PLY files from the trained model.
+
+        Args:
+            ply_path: Path to the trained gaussian PLY.
+            labels: Object definitions from segment(). Can be a JSON string,
+                    list of dicts, or None (full_scene fallback).
+
+        Returns: {object_plys: list[str]}
         """
-        if not self._extracted_objects:
+        trained_ply = Path(ply_path)
+        if not trained_ply.exists():
             return StageResult(
-                success=False, state=self._state,
-                error="No objects to extract",
+                success=False, stage="extract_objects",
+                error=f"PLY not found: {ply_path}",
             )
 
-        objects_dir = self.output_dir / "objects"
+        # Parse labels
+        if labels is None:
+            objects = [{"label": "full_scene", "count": -1}]
+        elif isinstance(labels, str):
+            objects = json.loads(labels)
+        elif isinstance(labels, dict):
+            objects = [labels]
+        else:
+            objects = list(labels)
+
+        objects_dir = self.job_dir / "objects"
         objects_dir.mkdir(parents=True, exist_ok=True)
+
+        masks_dir = self.job_dir / "sam3_masks"
+        has_masks = masks_dir.exists() and any(masks_dir.glob("*.npy"))
+
         extracted: list[dict[str, Any]] = []
 
-        # Check for SAM3 masks from decompose stage
-        masks_dir = self.output_dir / "sam3_masks"
-        has_sam3_masks = masks_dir.exists() and any(masks_dir.glob("*.npy"))
-
-        for obj in self._extracted_objects:
-            label = obj["label"]
+        for obj in objects:
+            label = obj.get("label", "unknown")
             safe_name = label.replace(" ", "_").replace("/", "_")[:50]
-            ply_path = objects_dir / f"{safe_name}.ply"
+            out_ply = objects_dir / f"{safe_name}.ply"
 
-            if label == "full_scene":
-                # Try MCP first, fall back to copying trained PLY
-                try:
-                    self.mcp.save_ply(str(ply_path))
-                    extracted.append({"label": label, "ply": str(ply_path)})
-                except Exception:
-                    # File-based fallback: copy trained PLY as full scene
-                    if self._trained_ply and self._trained_ply.exists():
-                        shutil.copy2(str(self._trained_ply), str(ply_path))
-                        extracted.append({"label": label, "ply": str(ply_path)})
-                        logger.info("Copied trained PLY as full_scene: %s", ply_path)
-                    else:
-                        logger.warning("No trained PLY available for full_scene extraction")
+            if label == "full_scene" or not has_masks:
+                shutil.copy2(str(trained_ply), str(out_ply))
+                extracted.append({"label": label, "ply": str(out_ply)})
+                logger.info("Copied trained PLY as '%s': %s", label, out_ply)
             else:
-                # Try MCP first
+                # Try mask-based extraction
                 try:
-                    self.mcp.selection_by_description(label)
-                    self.mcp.save_ply(str(ply_path))
-                    self.mcp.selection_clear()
-                    extracted.append({"label": label, "ply": str(ply_path)})
-                    continue
-                except Exception:
-                    pass
+                    ok = self._extract_with_mask(obj, trained_ply, out_ply, masks_dir)
+                    if ok:
+                        extracted.append({"label": label, "ply": str(out_ply)})
+                        continue
+                except Exception as exc:
+                    logger.warning("Mask extraction failed for '%s': %s", label, exc)
 
-                # File-based fallback: use SAM3 masks to filter trained PLY
-                if has_sam3_masks and self._trained_ply and self._trained_ply.exists():
-                    try:
-                        extracted_path = self._extract_object_from_ply_with_mask(
-                            obj, ply_path, masks_dir,
-                        )
-                        if extracted_path:
-                            extracted.append({"label": label, "ply": str(extracted_path)})
-                            continue
-                    except Exception as exc:
-                        logger.warning("Mask-based extraction failed for '%s': %s", label, exc)
-
-                # Last resort: copy the full trained PLY for this object
-                if self._trained_ply and self._trained_ply.exists():
-                    shutil.copy2(str(self._trained_ply), str(ply_path))
-                    extracted.append({"label": label, "ply": str(ply_path)})
-                    logger.info("Copied full PLY as fallback for '%s'", label)
-                else:
-                    logger.warning("No fallback PLY for '%s'", label)
+                # Fallback: copy full PLY
+                shutil.copy2(str(trained_ply), str(out_ply))
+                extracted.append({"label": label, "ply": str(out_ply)})
 
         if not extracted:
             return StageResult(
-                success=False, state=self._state,
+                success=False, stage="extract_objects",
                 error="No objects could be extracted",
             )
 
-        self._extracted_objects = extracted
         return StageResult(
-            success=True, state=self._state,
+            success=True, stage="extract_objects",
             metrics={"extracted_count": len(extracted)},
-            artifacts={f"ply:{e['label']}": e["ply"] for e in extracted},
+            artifacts={
+                "object_plys": json.dumps([e["ply"] for e in extracted]),
+                **{f"ply:{e['label']}": e["ply"] for e in extracted},
+            },
         )
 
-    def _extract_object_from_ply_with_mask(
+    def _extract_with_mask(
         self,
         obj: dict[str, Any],
+        trained_ply: Path,
         output_path: Path,
         masks_dir: Path,
-    ) -> Path | None:
-        """Extract a subset of gaussians from the trained PLY using a SAM3 mask.
-
-        Projects each gaussian's 3D position to 2D using the first camera,
-        then keeps only those inside the mask for the given object_id.
-        If no camera info is available, returns None so the caller can fall back.
-        """
+    ) -> bool:
+        """Extract a subset of gaussians using a SAM3 mask. Returns True on success."""
         import numpy as np
 
         object_id = obj.get("object_id")
         if object_id is None:
-            return None
+            return False
 
         mask_path = masks_dir / f"mask_{int(object_id):04d}.npy"
         if not mask_path.exists():
-            return None
+            return False
 
         mask = np.load(str(mask_path))
 
-        try:
-            import trimesh
-            pcd = trimesh.load(str(self._trained_ply))
-            if hasattr(pcd, "vertices"):
-                points = np.asarray(pcd.vertices)
-            else:
-                points = np.asarray(pcd.points) if hasattr(pcd, "points") else None
-            if points is None or len(points) == 0:
-                return None
+        import trimesh
+        pcd = trimesh.load(str(trained_ply))
+        if hasattr(pcd, "vertices"):
+            points = np.asarray(pcd.vertices)
+        else:
+            points = np.asarray(pcd.points) if hasattr(pcd, "points") else None
+        if points is None or len(points) == 0:
+            return False
 
-            # Simple spatial filtering: project XY to mask space
-            # Normalize XY coordinates to mask dimensions
-            h, w = mask.shape[-2], mask.shape[-1]
-            xy = points[:, :2]
-            xy_min = xy.min(axis=0)
-            xy_max = xy.max(axis=0)
-            xy_range = xy_max - xy_min
-            xy_range[xy_range == 0] = 1.0
+        h, w = mask.shape[-2], mask.shape[-1]
+        xy = points[:, :2]
+        xy_min = xy.min(axis=0)
+        xy_max = xy.max(axis=0)
+        xy_range = xy_max - xy_min
+        xy_range[xy_range == 0] = 1.0
 
-            px = ((xy[:, 0] - xy_min[0]) / xy_range[0] * (w - 1)).astype(int).clip(0, w - 1)
-            py = ((xy[:, 1] - xy_min[1]) / xy_range[1] * (h - 1)).astype(int).clip(0, h - 1)
+        px = ((xy[:, 0] - xy_min[0]) / xy_range[0] * (w - 1)).astype(int).clip(0, w - 1)
+        py = ((xy[:, 1] - xy_min[1]) / xy_range[1] * (h - 1)).astype(int).clip(0, h - 1)
 
-            # Handle multi-dim masks (object_ids x H x W or H x W)
-            if mask.ndim == 3:
-                mask_2d = mask[0]
-            else:
-                mask_2d = mask
+        mask_2d = mask[0] if mask.ndim == 3 else mask
+        inside = mask_2d[py, px] > 0
+        if inside.sum() == 0:
+            return False
 
-            inside = mask_2d[py, px] > 0
-            if inside.sum() == 0:
-                return None
+        filtered_points = points[inside]
+        colors = None
+        if hasattr(pcd, "visual") and hasattr(pcd.visual, "vertex_colors"):
+            all_colors = np.asarray(pcd.visual.vertex_colors)
+            colors = all_colors[inside]
 
-            # Build filtered point cloud
-            filtered_points = points[inside]
-            colors = None
-            if hasattr(pcd, "visual") and hasattr(pcd.visual, "vertex_colors"):
-                all_colors = np.asarray(pcd.visual.vertex_colors)
-                colors = all_colors[inside]
+        filtered_pcd = trimesh.PointCloud(filtered_points)
+        if colors is not None:
+            filtered_pcd.colors = colors
 
-            filtered_pcd = trimesh.PointCloud(filtered_points)
-            if colors is not None:
-                filtered_pcd.colors = colors
+        filtered_pcd.export(str(output_path))
+        logger.info("Extracted %d/%d points for '%s'", inside.sum(), len(points), obj.get("label", "unknown"))
+        return True
 
-            filtered_pcd.export(str(output_path))
-            logger.info(
-                "Extracted %d/%d points for '%s' via mask",
-                inside.sum(), len(points), obj.get("label", "unknown"),
-            )
-            return output_path
+    # ------------------------------------------------------------------
+    # Stage 8: Mesh objects
+    # ------------------------------------------------------------------
 
-        except Exception as exc:
-            logger.warning("PLY mask extraction error: %s", exc)
-            return None
+    def mesh_objects(self, object_plys: list[str] | str) -> StageResult:
+        """Generate meshes per object PLY.
 
-    def _run_mesh_objects(self) -> StageResult:
-        """Convert each extracted PLY to a mesh.
+        Args:
+            object_plys: List of PLY paths, or a JSON string of a list.
 
-        Extraction priority per object:
-        1. Hunyuan3D 2.0 multi-view reconstruction (if enabled and available)
-        2. TSDF depth-fusion via MeshExtractor
-        3. MeshExtractor.extract_from_pointcloud (Poisson-like fallback)
-        4. Open3D Poisson (legacy fallback)
-
-        Saves per-object OBJ + texture to objects/meshes/.
+        Returns: {meshes: list[{label, mesh, ply, vertex_count, method}]}
         """
-        meshes_dir = self.output_dir / "objects" / "meshes"
+        if isinstance(object_plys, str):
+            object_plys = json.loads(object_plys)
+
+        import trimesh
+
+        meshes_dir = self.job_dir / "objects" / "meshes"
         meshes_dir.mkdir(parents=True, exist_ok=True)
         results: list[dict[str, Any]] = []
 
-        for obj in self._extracted_objects:
-            label = obj.get("label", "unknown")
-            ply_path = obj.get("ply")
-            if not ply_path or not Path(ply_path).exists():
-                logger.warning("Skipping '%s': PLY not found at %s", label, ply_path)
+        for ply_path in object_plys:
+            ply = Path(ply_path)
+            if not ply.exists():
+                logger.warning("PLY not found: %s", ply_path)
                 continue
 
-            safe_name = label.replace(" ", "_").replace("/", "_")[:50]
-            obj_dir = meshes_dir / safe_name
+            label = ply.stem
+            obj_dir = meshes_dir / label
             obj_dir.mkdir(parents=True, exist_ok=True)
-            mesh_obj_path = obj_dir / f"{safe_name}.obj"
-            mesh_glb_path = obj_dir / f"{safe_name}.glb"
+            mesh_glb = obj_dir / f"{label}.glb"
+            mesh_obj = obj_dir / f"{label}.obj"
 
-            mesh_result = self._mesh_single_object(
-                label, ply_path, obj_dir, mesh_obj_path, mesh_glb_path,
-            )
+            mesh_result = self._mesh_single(label, str(ply), obj_dir, mesh_obj, mesh_glb)
             if mesh_result is not None:
                 results.append(mesh_result)
 
         if not results:
             return StageResult(
-                success=False, state=self._state,
+                success=False, stage="mesh_objects",
                 error="No meshes could be generated",
             )
 
-        self._mesh_results = results
         return StageResult(
-            success=True, state=self._state,
+            success=True, stage="mesh_objects",
             metrics={"mesh_count": len(results)},
-            artifacts={f"mesh:{r['label']}": r["mesh"] for r in results},
+            artifacts={
+                "meshes": json.dumps(results),
+                **{f"mesh:{r['label']}": r["mesh"] for r in results},
+            },
         )
 
-    def _mesh_single_object(
+    def _mesh_single(
         self,
         label: str,
         ply_path: str,
@@ -1141,14 +935,11 @@ class PipelineOrchestrator:
         import numpy as np
         import trimesh
 
-        # --- Load and normalise point cloud from PLY ---
-        points, colors = self._load_ply_points(ply_path)
+        points, colors = _load_ply_points(ply_path)
         if points is None or len(points) == 0:
             logger.warning("No points loaded from PLY for '%s'", label)
             return None
 
-        # Normalize points to unit cube centered at origin so voxel grids
-        # don't blow up. Store transform to undo later if needed.
         centroid = points.mean(axis=0)
         extent = points.max(axis=0) - points.min(axis=0)
         scale = extent.max()
@@ -1156,32 +947,24 @@ class PipelineOrchestrator:
             scale = 1.0
         points_norm = (points - centroid) / scale
 
-        logger.info(
-            "PLY for '%s': %d points, extent=%.1f, centroid=%s",
-            label, len(points), scale, centroid,
-        )
+        logger.info("PLY '%s': %d points, extent=%.1f", label, len(points), scale)
 
         def _export_mesh(mesh: "trimesh.Trimesh", method: str) -> dict[str, Any] | None:
-            """Rescale mesh back to original coordinates and export."""
-            # Undo normalization
             mesh.vertices = mesh.vertices * scale + centroid
             mesh.export(str(mesh_glb_path))
             mesh.export(str(mesh_obj_path))
             vc = len(mesh.vertices)
             logger.info("%s mesh for '%s': %d verts", method, label, vc)
             return {
-                "label": label,
-                "mesh": str(mesh_glb_path),
-                "mesh_obj": str(mesh_obj_path),
-                "ply": ply_path,
-                "vertex_count": vc,
-                "method": method,
+                "label": label, "mesh": str(mesh_glb_path), "mesh_obj": str(mesh_obj_path),
+                "ply": ply_path, "vertex_count": vc, "method": method,
             }
 
-        # --- Strategy 1: Hunyuan3D 2.0 ---
+        # Strategy 1: Hunyuan3D
         if self.config.hunyuan3d.enabled:
             try:
                 from pipeline.hunyuan3d_client import Hunyuan3DClient
+                import inspect
 
                 h3d_kwargs = {
                     "comfyui_url": self.config.hunyuan3d.comfyui_url,
@@ -1191,8 +974,6 @@ class PipelineOrchestrator:
                     "timeout": self.config.hunyuan3d.timeout,
                     "seed": self.config.hunyuan3d.seed,
                 }
-                # Only pass multiview if the client supports it
-                import inspect
                 sig = inspect.signature(Hunyuan3DClient.__init__)
                 if "multiview" in sig.parameters:
                     h3d_kwargs["multiview"] = self.config.hunyuan3d.multiview
@@ -1203,22 +984,14 @@ class PipelineOrchestrator:
                     result.mesh.export(str(mesh_glb_path))
                     result.mesh.export(str(mesh_obj_path))
                     vc = len(result.mesh.vertices)
-                    logger.info(
-                        "Hunyuan3D mesh for '%s': %d verts -> %s",
-                        label, vc, mesh_glb_path,
-                    )
                     return {
-                        "label": label,
-                        "mesh": str(mesh_glb_path),
-                        "mesh_obj": str(mesh_obj_path),
-                        "ply": ply_path,
-                        "vertex_count": vc,
-                        "method": "hunyuan3d",
+                        "label": label, "mesh": str(mesh_glb_path), "mesh_obj": str(mesh_obj_path),
+                        "ply": ply_path, "vertex_count": vc, "method": "hunyuan3d",
                     }
             except Exception as exc:
                 logger.warning("Hunyuan3D failed for '%s': %s", label, exc)
 
-        # --- Strategy 2: TSDF depth-fusion (try MCP, fall back to file) ---
+        # Strategy 2: TSDF
         try:
             from pipeline.mesh_extractor import MeshExtractor, TSDFConfig
 
@@ -1227,21 +1000,17 @@ class PipelineOrchestrator:
                 mcp_endpoint=self.config.mcp_endpoint,
             )
             extractor = MeshExtractor(config=tsdf_cfg)
-            try:
-                mesh = extractor.extract_from_mcp()
-            except Exception:
-                # MCP unavailable — use normalized points for manageable grid
-                mesh = extractor.extract_from_pointcloud(
-                    points_norm, colors=colors,
-                    target_faces=self.config.mesh.max_vertices // 2,
-                )
+            mesh = extractor.extract_from_pointcloud(
+                points_norm, colors=colors,
+                target_faces=self.config.mesh.max_vertices // 2,
+            )
             result = _export_mesh(mesh, "tsdf")
             if result:
                 return result
         except Exception as exc:
             logger.warning("TSDF meshing failed for '%s': %s", label, exc)
 
-        # --- Strategy 3: Point cloud marching cubes (normalized) ---
+        # Strategy 3: Point cloud marching cubes
         try:
             from pipeline.mesh_extractor import MeshExtractor
 
@@ -1256,20 +1025,17 @@ class PipelineOrchestrator:
         except Exception as exc:
             logger.warning("Point-cloud meshing failed for '%s': %s", label, exc)
 
-        # --- Strategy 4: Open3D Poisson fallback ---
+        # Strategy 4: Open3D Poisson
         try:
-            self._mesh_with_open3d(ply_path, str(mesh_glb_path))
+            _mesh_with_open3d(ply_path, str(mesh_glb_path))
             return {
-                "label": label,
-                "mesh": str(mesh_glb_path),
-                "ply": ply_path,
-                "vertex_count": 0,
-                "method": "open3d",
+                "label": label, "mesh": str(mesh_glb_path), "ply": ply_path,
+                "vertex_count": 0, "method": "open3d",
             }
         except Exception as exc:
             logger.warning("Open3D fallback failed for '%s': %s", label, exc)
 
-        # --- Strategy 5: Trimesh convex hull (always works, no deps) ---
+        # Strategy 5: Convex hull
         try:
             pcd = trimesh.PointCloud(points)
             mesh = pcd.convex_hull
@@ -1277,154 +1043,57 @@ class PipelineOrchestrator:
                 mesh.export(str(mesh_glb_path))
                 mesh.export(str(mesh_obj_path))
                 vc = len(mesh.vertices)
-                logger.info("Convex hull mesh for '%s': %d verts", label, vc)
                 return {
-                    "label": label,
-                    "mesh": str(mesh_glb_path),
-                    "mesh_obj": str(mesh_obj_path),
-                    "ply": ply_path,
-                    "vertex_count": vc,
-                    "method": "convex_hull",
+                    "label": label, "mesh": str(mesh_glb_path), "mesh_obj": str(mesh_obj_path),
+                    "ply": ply_path, "vertex_count": vc, "method": "convex_hull",
                 }
         except Exception as exc:
             logger.warning("Convex hull fallback failed for '%s': %s", label, exc)
 
         return None
 
-    @staticmethod
-    def _load_ply_points(ply_path: str) -> tuple:
-        """Load points and colors from a PLY file (handles both 3DGS and standard PLYs).
+    # ------------------------------------------------------------------
+    # Stage 9: Texture bake
+    # ------------------------------------------------------------------
 
-        Returns:
-            Tuple of (points: np.ndarray Nx3, colors: np.ndarray Nx3 or None)
-        """
-        import numpy as np
-
-        points = None
-        colors = None
-
-        # Try plyfile first (handles 3DGS PLYs with custom properties)
-        try:
-            from plyfile import PlyData
-            ply = PlyData.read(ply_path)
-            vertex = ply["vertex"]
-            x = np.asarray(vertex["x"])
-            y = np.asarray(vertex["y"])
-            z = np.asarray(vertex["z"])
-            points = np.column_stack([x, y, z])
-
-            # Extract colors if available (various naming conventions)
-            for r_name, g_name, b_name in [
-                ("red", "green", "blue"),
-                ("f_dc_0", "f_dc_1", "f_dc_2"),  # 3DGS SH DC component
-            ]:
-                if r_name in vertex.data.dtype.names:
-                    r = np.asarray(vertex[r_name])
-                    g = np.asarray(vertex[g_name])
-                    b = np.asarray(vertex[b_name])
-                    c = np.column_stack([r, g, b])
-                    # Normalize to 0-255 range
-                    if c.max() <= 1.0:
-                        c = (c * 255).clip(0, 255).astype(np.uint8)
-                    elif c.max() > 255:
-                        # SH DC coefficients — convert to approximate RGB
-                        c = ((c * 0.2822 + 0.5) * 255).clip(0, 255).astype(np.uint8)
-                    colors = c
-                    break
-
-            # Filter out NaN/inf points
-            valid = np.isfinite(points).all(axis=1)
-            if not valid.all():
-                points = points[valid]
-                if colors is not None:
-                    colors = colors[valid]
-
-            return points, colors
-        except Exception:
-            pass
-
-        # Fallback: trimesh
-        try:
-            import trimesh
-            loaded = trimesh.load(ply_path)
-            if hasattr(loaded, "vertices") and loaded.vertices is not None:
-                points = np.asarray(loaded.vertices)
-            elif hasattr(loaded, "points"):
-                points = np.asarray(loaded.points) if hasattr(loaded.points, '__len__') else None
-
-            if points is not None:
-                # Extract colors safely
-                try:
-                    if hasattr(loaded, "visual") and hasattr(loaded.visual, "vertex_colors"):
-                        vc = np.asarray(loaded.visual.vertex_colors)
-                        if vc.ndim == 2 and vc.shape[1] >= 3:
-                            colors = vc[:, :3]
-                except Exception:
-                    pass
-
-                # Filter NaN/inf
-                valid = np.isfinite(points).all(axis=1)
-                if not valid.all():
-                    points = points[valid]
-                    if colors is not None:
-                        colors = colors[valid]
-
-            return points, colors
-        except Exception:
-            pass
-
-        return None, None
-
-    @staticmethod
-    def _mesh_with_open3d(ply_path: str, output_path: str) -> None:
-        """Fallback Poisson surface reconstruction using Open3D."""
-        import open3d as o3d
-
-        pcd = o3d.io.read_point_cloud(ply_path)
-        if not pcd.has_normals():
-            pcd.estimate_normals()
-        mesh, _ = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(pcd, depth=9)
-        o3d.io.write_triangle_mesh(output_path, mesh)
-
-    def _run_texture_bake(self) -> StageResult:
+    def texture_bake(self, meshes: list[dict[str, Any]] | str) -> StageResult:
         """Bake diffuse textures onto each object mesh.
 
-        For meshes with vertex colors (from TSDF or point-cloud extraction),
-        bakes vertex colors into a UV texture atlas. For meshes without
-        vertex colors, renders views from MCP and projects them.
+        Args:
+            meshes: List of mesh info dicts (from mesh_objects) or JSON string.
+
+        Returns: {baked_count, textured_meshes}
         """
-        if not self._mesh_results:
-            logger.info("No meshes to texture, skipping")
+        if isinstance(meshes, str):
+            meshes = json.loads(meshes)
+
+        if not meshes:
             return StageResult(
-                success=True, state=self._state,
-                metrics={"skipped": True},
+                success=True, stage="texture_bake",
+                metrics={"skipped": True, "reason": "no meshes"},
             )
 
         from pipeline.texture_baker import TextureBaker, BakeConfig
         import trimesh
 
-        bake_cfg = BakeConfig(
-            mcp_endpoint=self.config.mcp_endpoint,
-        )
+        bake_cfg = BakeConfig(mcp_endpoint=self.config.mcp_endpoint)
         baker = TextureBaker(config=bake_cfg)
         baked_count = 0
 
-        for mesh_info in self._mesh_results:
+        for mesh_info in meshes:
             label = mesh_info.get("label", "unknown")
             mesh_path = mesh_info.get("mesh_obj") or mesh_info.get("mesh")
             if not mesh_path or not Path(mesh_path).exists():
-                logger.warning("Skipping texture bake for '%s': mesh not found", label)
                 continue
 
             safe_name = label.replace(" ", "_").replace("/", "_")[:50]
-            texture_dir = self.output_dir / "objects" / "meshes" / safe_name
+            texture_dir = self.job_dir / "objects" / "meshes" / safe_name
             texture_dir.mkdir(parents=True, exist_ok=True)
             texture_path = texture_dir / f"{safe_name}_diffuse.png"
             textured_mesh_path = texture_dir / f"{safe_name}_textured.obj"
 
             try:
                 mesh = trimesh.load(mesh_path, process=False)
-
                 has_vertex_colors = (
                     mesh.visual is not None
                     and hasattr(mesh.visual, "vertex_colors")
@@ -1446,339 +1115,182 @@ class PipelineOrchestrator:
                 mesh_info["texture"] = str(tex_path)
                 baked_count += 1
                 logger.info("Baked texture for '%s' -> %s", label, tex_path)
-
             except Exception as exc:
                 logger.warning("Texture baking failed for '%s': %s", label, exc)
 
         return StageResult(
-            success=True, state=self._state,
-            metrics={"baked_count": baked_count, "total_meshes": len(self._mesh_results)},
+            success=True, stage="texture_bake",
+            metrics={"baked_count": baked_count, "total_meshes": len(meshes)},
             artifacts={
-                f"texture:{r['label']}": r.get("texture", "")
-                for r in self._mesh_results if r.get("texture")
+                "textured_meshes": json.dumps(meshes),
             },
         )
 
-    def _run_quality_gate_2(self) -> StageResult:
-        """Evaluate mesh quality and round-trip fidelity.
+    # ------------------------------------------------------------------
+    # Stage 10: Assemble USD
+    # ------------------------------------------------------------------
 
-        In headless mode, passes if meshes exist on disk. MCP render/metrics
-        are optional enhancements.
+    def assemble_usd(self, objects: dict | list | str, cameras: dict | str | None = None) -> StageResult:
+        """Compose USD scene from meshes using the standalone Python 3.11 assembler.
+
+        The standalone script (scripts/assemble_usd_scene.py) runs under a
+        Python 3.11 venv with usd-core, since usd-core has no wheels for
+        Python 3.12+. The script discovers COLMAP cameras, meshes, textures,
+        and PLY files from the job directory and builds a proper USD stage.
+
+        Falls back to a minimal USDA stub if the subprocess fails.
+
+        Args:
+            objects: Mesh results (from mesh_objects) as list/dict/JSON string.
+            cameras: Optional camera data (unused in file-based mode).
+
+        Returns: {usd_path}
         """
-        if not self._mesh_results:
-            # No meshes at all — check if any mesh files exist on disk
-            meshes_dir = self.output_dir / "objects" / "meshes"
-            if meshes_dir.exists() and any(meshes_dir.rglob("*.glb")) or any(meshes_dir.rglob("*.obj")):
-                logger.info("Quality Gate 2: PASS (mesh files found on disk)")
-                return StageResult(
-                    success=True, state=self._state,
-                    metrics={"method": "file_check", "meshes_exist": True},
-                )
-            return StageResult(
-                success=False, state=self._state,
-                error="No mesh results to validate",
-            )
+        if isinstance(objects, str):
+            objects = json.loads(objects)
+        if isinstance(objects, dict):
+            objects = [objects]
 
-        all_results: list[QualityResult] = []
-
-        for mesh_info in self._mesh_results:
-            # Verify mesh file actually exists on disk
-            mesh_path = mesh_info.get("mesh", "")
-            if mesh_path and Path(mesh_path).exists():
-                mesh_metrics = MeshMetrics(
-                    vertex_count=mesh_info.get("vertex_count", 0),
-                    face_count=mesh_info.get("face_count", 0),
-                    is_watertight=mesh_info.get("is_watertight", False),
-                    normal_consistency=mesh_info.get("normal_consistency", 0.5),
-                    object_label=mesh_info.get("label", ""),
-                )
-                quality = assess_mesh_quality(mesh_metrics, self.config)
-                all_results.append(quality)
-
-        # Round-trip check (render original vs mesh-based) — optional with MCP
-        try:
-            self.mcp.render_capture(
-                width=640, height=480,
-                output_path=str(self.output_dir / "renders" / "original.png"),
-            )
-        except Exception:
-            logger.info("MCP render not available for round-trip check (expected in headless)")
-
-        rt_metrics = RoundTripMetrics(
-            original_psnr=self._training_metrics.psnr if self._training_metrics else 0,
-            roundtrip_psnr=self._training_metrics.psnr * 0.9 if self._training_metrics else 0,
-            psnr_delta=0.0,
-        )
-        rt_quality = assess_roundtrip_quality(rt_metrics, self.config)
-        all_results.append(rt_quality)
-
-        failed = [r for r in all_results if r.verdict == QualityVerdict.FAIL]
-
-        # In headless CLI mode without training metrics, be lenient —
-        # pass if mesh files physically exist
-        if failed and not self._training_metrics:
-            existing_meshes = [
-                r for r in self._mesh_results
-                if r.get("mesh") and Path(r["mesh"]).exists()
-            ]
-            if existing_meshes:
-                logger.info(
-                    "Quality Gate 2: PASS (headless mode, %d mesh files exist on disk)",
-                    len(existing_meshes),
-                )
-                return StageResult(
-                    success=True, state=self._state,
-                    metrics={
-                        "method": "headless_file_check",
-                        "mesh_count": len(existing_meshes),
-                    },
-                )
-
-        if failed:
-            return StageResult(
-                success=False, state=self._state,
-                error="; ".join(r.recommendation for r in failed),
-                quality=failed[0],
-                metrics={"failed_checks": len(failed)},
-            )
-
-        combined_metrics = {}
-        for r in all_results:
-            combined_metrics.update(r.metrics)
-
-        return StageResult(
-            success=True, state=self._state,
-            metrics=combined_metrics,
-            quality=rt_quality,
-        )
-
-    def _run_inpaint_bg(self) -> StageResult:
-        """Inpaint the background after object removal.
-
-        Gracefully skips if MCP/ComfyUI/FLUX not configured or unavailable.
-        """
-        try:
-            result = self.mcp.plugin_invoke(
-                "inpaint", "fill_background",
-                {
-                    "method": self.config.inpaint.method,
-                    "iterations": self.config.inpaint.iterations,
-                    "blend_radius": self.config.inpaint.blend_radius,
-                },
-            )
-            return StageResult(
-                success=True, state=self._state,
-                metrics={"inpaint_method": self.config.inpaint.method},
-                artifacts={},
-            )
-        except Exception as exc:
-            # Inpainting is optional; log warning and continue
-            logger.info("Background inpainting skipped (no MCP/ComfyUI): %s", exc)
-            return StageResult(
-                success=True, state=self._state,
-                metrics={"inpaint_skipped": True, "reason": str(exc)},
-            )
-
-    def _run_retrain_bg(self) -> StageResult:
-        """Retrain the background gaussians after inpainting.
-
-        Gracefully skips if no inpainted frames or MCP unavailable.
-        """
-        # Check if inpainting actually produced frames
-        inpaint_skipped = self._stage_metrics.get("INPAINT_BG", {}).get("inpaint_skipped", False)
-        if inpaint_skipped:
-            logger.info("Retrain skipped: no inpainted frames to retrain on")
-            return StageResult(
-                success=True, state=self._state,
-                metrics={"retrain_skipped": True, "reason": "no_inpainted_frames"},
-            )
-
-        try:
-            self.mcp.training_start()
-            final_state = self.mcp.wait_training_complete(poll_interval=10.0)
-        except Exception as exc:
-            logger.info("Background retraining skipped (no MCP): %s", exc)
-            return StageResult(
-                success=True, state=self._state,
-                metrics={"retrain_skipped": True, "reason": str(exc)},
-            )
-
-        bg_ckpt = self.output_dir / "checkpoints" / "bg_retrained.resume"
-        bg_ckpt.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            self.mcp.save_checkpoint(str(bg_ckpt))
-        except Exception:
-            pass
-
-        return StageResult(
-            success=True, state=self._state,
-            metrics={
-                "bg_psnr": final_state.psnr,
-                "bg_ssim": final_state.ssim,
-                "bg_iterations": final_state.iteration,
-            },
-            artifacts={"bg_checkpoint": str(bg_ckpt)},
-        )
-
-    def _run_usd_assemble(self) -> StageResult:
-        """Assemble all objects and background into a USD scene.
-
-        Works entirely file-based. MCP plugin_invoke is a bonus if available.
-        """
-        usd_dir = self.output_dir / "usd"
+        usd_dir = self.job_dir / "usd"
         usd_dir.mkdir(parents=True, exist_ok=True)
         usd_path = usd_dir / "scene.usda"
 
-        # Collect all mesh artifacts
-        meshes = [r for r in self._mesh_results if Path(r.get("mesh", "")).exists()]
+        # Copy trained PLY as scene.ply (needed by the assembler)
+        final_ply = self.job_dir / "scene.ply"
+        model_plys = sorted(self.job_dir.rglob("model/**/*.ply"))
+        if model_plys and not final_ply.exists():
+            shutil.copy2(str(model_plys[-1]), str(final_ply))
+            logger.info("Copied trained PLY as scene.ply")
 
-        # Generate USDA — try MCP plugin, fall back to file-based
-        try:
-            self.mcp.plugin_invoke(
-                "usd_export", "assemble",
-                {
-                    "meshes": [r["mesh"] for r in meshes],
-                    "labels": [r["label"] for r in meshes],
-                    "output": str(usd_path),
-                    "format": self.config.export.format,
-                    "include_materials": self.config.export.include_materials,
-                    "coordinate_system": self.config.export.coordinate_system,
-                },
-            )
-        except Exception:
-            # Fallback: write a minimal USDA referencing the meshes
-            self._write_minimal_usda(usd_path, meshes)
+        # Locate the standalone assembler script
+        script_path = Path(__file__).resolve().parent.parent.parent / "scripts" / "assemble_usd_scene.py"
+        if not script_path.exists():
+            # Docker container path
+            script_path = Path("/opt/gaussian-toolkit/scripts/assemble_usd_scene.py")
 
-        if not usd_path.exists():
-            self._write_minimal_usda(usd_path, meshes)
+        # Find Python 3.11 with usd-core
+        usd_python = _find_usd_python()
 
-        # Also save the gaussian splat PLY — try MCP, fall back to copy
-        final_ply = self.output_dir / "scene.ply"
-        try:
-            self.mcp.save_ply(str(final_ply))
-        except Exception:
-            # Copy trained PLY as final scene PLY
-            if self._trained_ply and self._trained_ply.exists() and not final_ply.exists():
-                shutil.copy2(str(self._trained_ply), str(final_ply))
-                logger.info("Copied trained PLY as scene.ply")
+        assembled = False
+        if usd_python and script_path.exists():
+            try:
+                result = subprocess.run(
+                    [
+                        str(usd_python),
+                        str(script_path),
+                        "--job-dir", str(self.job_dir),
+                        "--output", str(usd_path),
+                    ],
+                    capture_output=True, text=True, timeout=120,
+                    env={**os.environ, "PYTHONPATH": ""},
+                )
+                if result.returncode == 0:
+                    assembled = True
+                    logger.info("USD scene assembled via standalone script:\n%s", result.stdout)
+                else:
+                    logger.warning(
+                        "Standalone USD assembler failed (rc=%d):\nstdout: %s\nstderr: %s",
+                        result.returncode, result.stdout, result.stderr,
+                    )
+            except (subprocess.TimeoutExpired, OSError) as exc:
+                logger.warning("Standalone USD assembler error: %s", exc)
+
+        if not assembled:
+            logger.warning("Falling back to minimal USDA stub")
+            meshes = [r for r in objects if Path(r.get("mesh", "")).exists()]
+            _write_minimal_usda(usd_path, meshes)
+
+        usd_size = usd_path.stat().st_size if usd_path.exists() else 0
 
         return StageResult(
-            success=True, state=self._state,
-            metrics={"mesh_count": len(meshes)},
+            success=True, stage="assemble_usd",
+            metrics={
+                "mesh_count": len(objects),
+                "usd_size_bytes": usd_size,
+                "used_standalone_assembler": assembled,
+            },
             artifacts={
-                "usd_scene": str(usd_path),
+                "usd_path": str(usd_path),
                 "final_ply": str(final_ply) if final_ply.exists() else "",
             },
         )
 
-    @staticmethod
-    def _write_minimal_usda(path: Path, meshes: list[dict[str, Any]]) -> None:
-        """Write a minimal USDA that references extracted meshes."""
-        lines = [
-            '#usda 1.0',
-            '(',
-            '    defaultPrim = "Scene"',
-            '    metersPerUnit = 1',
-            '    upAxis = "Y"',
-            ')',
-            '',
-            'def Xform "Scene"',
-            '{',
-        ]
-        for i, mesh in enumerate(meshes):
-            label = mesh.get("label", f"object_{i}").replace(" ", "_")
-            mesh_path = mesh.get("mesh", "")
-            lines.append(f'    def Xform "{label}"')
-            lines.append('    {')
-            lines.append(f'        # Reference: {mesh_path}')
-            lines.append(f'        custom string mesh:path = "{mesh_path}"')
-            lines.append('    }')
-        lines.append('}')
-        lines.append('')
-        path.write_text("\n".join(lines), encoding="utf-8")
+    # ------------------------------------------------------------------
+    # Stage 11: Validate
+    # ------------------------------------------------------------------
 
-    def _run_validate(self) -> StageResult:
+    def validate(self) -> StageResult:
         """Final validation: check that key artifacts exist on disk.
 
-        MCP render/metrics are optional. In headless mode, passes if
-        the USD scene file exists.
+        Returns: {usd_exists, ply_exists, mesh_count}
         """
-        renders_dir = self.output_dir / "renders"
-        renders_dir.mkdir(parents=True, exist_ok=True)
+        usd_path = self.job_dir / "usd" / "scene.usda"
+        final_ply = self.job_dir / "scene.ply"
+        meshes_dir = self.job_dir / "objects" / "meshes"
 
-        render_path = ""
-        try:
-            render = self.mcp.render_capture(
-                width=1920, height=1080,
-                output_path=str(renders_dir / "final_render.png"),
-            )
-            render_path = render.path
-        except Exception:
-            logger.info("MCP render not available for final validation (expected in headless)")
+        mesh_count = 0
+        if meshes_dir.exists():
+            mesh_count = len(list(meshes_dir.rglob("*.glb"))) + len(list(meshes_dir.rglob("*.obj")))
 
-        state = None
-        try:
-            state = self.mcp.training_get_state()
-        except Exception:
-            pass
-
-        # Check key artifacts exist
-        usd_path = self.output_dir / "usd" / "scene.usda"
-        final_ply = self.output_dir / "scene.ply"
-
-        # In headless mode without metrics, pass if USD exists
-        if not state and not self._training_metrics:
-            if usd_path.exists():
-                logger.info("Validation PASS (headless mode, USD exists: %s)", usd_path)
-                return StageResult(
-                    success=True, state=self._state,
-                    metrics={
-                        "method": "headless_file_check",
-                        "usd_exists": True,
-                        "ply_exists": final_ply.exists(),
-                        "object_count": len(self._mesh_results),
-                        "usd_file_size_mb": self._get_file_size_mb(usd_path),
-                    },
-                    artifacts={"final_render": render_path},
-                )
-
-        final_metrics = FinalMetrics(
-            render_psnr=state.psnr if state else (self._training_metrics.psnr if self._training_metrics else 0),
-            object_count=len(self._mesh_results),
-            total_vertices=sum(r.get("vertex_count", 0) for r in self._mesh_results),
-            usd_file_size_mb=self._get_file_size_mb(usd_path),
-            has_materials=self.config.export.include_materials,
-        )
-
-        quality = assess_final_quality(final_metrics, self.config)
-
-        if quality.verdict == QualityVerdict.FAIL:
-            # In headless mode, downgrade FAIL to PASS if artifacts exist
-            if usd_path.exists() and not self._training_metrics:
-                logger.info("Validation: quality gate says FAIL but USD exists, passing in headless mode")
-                return StageResult(
-                    success=True, state=self._state,
-                    metrics=quality.metrics,
-                    artifacts={"final_render": render_path},
-                    quality=quality,
-                )
+        if not usd_path.exists() and mesh_count == 0:
             return StageResult(
-                success=False, state=self._state,
-                error=quality.recommendation,
-                quality=quality,
-                metrics=quality.metrics,
+                success=False, stage="validate",
+                error="No USD scene or mesh files found",
             )
 
         return StageResult(
-            success=True, state=self._state,
-            metrics=quality.metrics,
-            artifacts={"final_render": render_path},
-            quality=quality,
+            success=True, stage="validate",
+            metrics={
+                "usd_exists": usd_path.exists(),
+                "ply_exists": final_ply.exists(),
+                "usd_size_mb": round(_get_file_size_mb(usd_path), 2),
+                "ply_size_mb": round(_get_file_size_mb(final_ply), 2),
+                "mesh_count": mesh_count,
+            },
+            artifacts={
+                "usd_path": str(usd_path) if usd_path.exists() else "",
+                "final_ply": str(final_ply) if final_ply.exists() else "",
+            },
         )
 
-    @staticmethod
-    def _get_file_size_mb(path: Path) -> float:
-        try:
-            return path.stat().st_size / (1024 * 1024) if path.exists() else 0.0
-        except OSError:
-            return 0.0
+    # ------------------------------------------------------------------
+    # Status
+    # ------------------------------------------------------------------
+
+    def status(self) -> dict[str, Any]:
+        """Current job status for web UI.
+
+        Reads the pipeline_status.json if it exists, otherwise inspects
+        the directory tree to determine progress.
+        """
+        status_file = self.job_dir / self.config.status_file
+        if status_file.exists():
+            try:
+                return json.loads(status_file.read_text())
+            except Exception:
+                pass
+
+        # Infer status from directory structure
+        stages_done = []
+        if (self.job_dir / "frames").exists():
+            stages_done.append("ingest")
+        if (self.job_dir / "frames_selected").exists() or (self.job_dir / "frames_cleaned").exists():
+            stages_done.append("select_frames")
+        if (self.job_dir / "colmap").exists():
+            stages_done.append("reconstruct")
+        if (self.job_dir / "model").exists() and any(self.job_dir.rglob("model/**/*.ply")):
+            stages_done.append("train")
+        if (self.job_dir / "sam3_masks").exists():
+            stages_done.append("segment")
+        if (self.job_dir / "objects").exists():
+            stages_done.append("extract_objects")
+        if (self.job_dir / "objects" / "meshes").exists():
+            stages_done.append("mesh_objects")
+        if (self.job_dir / "usd" / "scene.usda").exists():
+            stages_done.append("assemble_usd")
+
+        return {
+            "job_dir": str(self.job_dir),
+            "stages_completed": stages_done,
+            "progress": len(stages_done) / len(STAGE_NAMES),
+        }

@@ -38,8 +38,9 @@ __all__ = [
     "MeshCleaner",
     "TextureBaker",
     "PipelineConfig",
-    "PipelineOrchestrator",
-    "PipelineState",
+    "PipelineStages",
+    "StageResult",
+    "STAGE_NAMES",
     "McpClient",
     # SAM2 video segmentation pipeline
     "SAM2Segmentor",
@@ -72,12 +73,22 @@ def __getattr__(name: str):
     if name == "PipelineConfig":
         from .config import PipelineConfig
         return PipelineConfig
+    if name == "PipelineStages":
+        from .stages import PipelineStages
+        return PipelineStages
+    if name == "StageResult":
+        from .stages import StageResult
+        return StageResult
+    if name == "STAGE_NAMES":
+        from .stages import STAGE_NAMES
+        return STAGE_NAMES
+    # Backward compat aliases
     if name == "PipelineOrchestrator":
-        from .orchestrator import PipelineOrchestrator
-        return PipelineOrchestrator
+        from .stages import PipelineStages
+        return PipelineStages
     if name == "PipelineState":
-        from .orchestrator import PipelineState
-        return PipelineState
+        # Return a simple namespace for backward compat
+        return None
     if name == "McpClient":
         from .mcp_client import McpClient
         return McpClient

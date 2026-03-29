@@ -95,20 +95,17 @@ class Job:
 
 
 PIPELINE_STAGES = [
-    "INGEST",
-    "REMOVE_PEOPLE",
-    "SELECT_FRAMES",
-    "RECONSTRUCT",
-    "QUALITY_GATE_1",
-    "DECOMPOSE",
-    "EXTRACT_OBJECTS",
-    "MESH_OBJECTS",
-    "TEXTURE_BAKE",
-    "QUALITY_GATE_2",
-    "INPAINT_BG",
-    "RETRAIN_BG",
-    "USD_ASSEMBLE",
-    "VALIDATE",
+    "ingest",
+    "remove_people",
+    "select_frames",
+    "reconstruct",
+    "train",
+    "segment",
+    "extract_objects",
+    "mesh_objects",
+    "texture_bake",
+    "assemble_usd",
+    "validate",
 ]
 
 

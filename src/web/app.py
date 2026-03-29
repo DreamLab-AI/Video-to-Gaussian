@@ -42,7 +42,14 @@ from web.job_manager import (
     list_jobs,
     update_job,
 )
-from web.pipeline_runner import cancel_pipeline, is_running, start_pipeline
+from web.pipeline_runner import (
+    cancel_pipeline,
+    complete_job,
+    complete_stage,
+    is_running,
+    start_pipeline,
+    update_stage,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -265,6 +272,67 @@ def remove_job(job_id: str) -> tuple[Response, int]:
 def health() -> tuple[Response, int]:
     """Health check endpoint."""
     return jsonify({"status": "ok", "timestamp": time.time()}), 200
+
+
+# ---------------------------------------------------------------------------
+# Claude Code orchestration API
+# ---------------------------------------------------------------------------
+
+
+@app.route("/api/job/<job_id>/stage", methods=["POST"])
+def api_update_stage(job_id: str) -> tuple[Response, int]:
+    """Called by Claude Code to report stage progress.
+
+    Body: {"stage": "train", "progress": 0.5, "message": "30k iter, loss 0.02"}
+    """
+    data = request.get_json(silent=True) or {}
+    stage = data.get("stage", "")
+    progress = float(data.get("progress", 0.0))
+    message = data.get("message", "")
+
+    if not stage:
+        return jsonify({"error": "stage is required"}), 400
+
+    ok = update_stage(job_id, stage=stage, progress=progress, message=message)
+    if not ok:
+        return jsonify({"error": "Job not found"}), 404
+    return jsonify({"status": "updated", "job_id": job_id, "stage": stage}), 200
+
+
+@app.route("/api/job/<job_id>/stage/complete", methods=["POST"])
+def api_complete_stage(job_id: str) -> tuple[Response, int]:
+    """Mark a stage as completed or failed.
+
+    Body: {"stage": "train", "success": true, "error": ""}
+    """
+    data = request.get_json(silent=True) or {}
+    stage = data.get("stage", "")
+    success = data.get("success", True)
+    error = data.get("error", "")
+
+    if not stage:
+        return jsonify({"error": "stage is required"}), 400
+
+    ok = complete_stage(job_id, stage=stage, success=success, error=error)
+    if not ok:
+        return jsonify({"error": "Job not found"}), 404
+    return jsonify({"status": "stage_completed" if success else "stage_failed", "stage": stage}), 200
+
+
+@app.route("/api/job/<job_id>/complete", methods=["POST"])
+def api_complete_job(job_id: str) -> tuple[Response, int]:
+    """Mark the entire job as completed or failed. Creates download archive.
+
+    Body: {"success": true} or {"success": false, "error": "reason"}
+    """
+    data = request.get_json(silent=True) or {}
+    success = data.get("success", True)
+    error = data.get("error", "")
+
+    ok = complete_job(job_id, success=success, error=error)
+    if not ok:
+        return jsonify({"error": "Job not found"}), 404
+    return jsonify({"status": "completed" if success else "failed", "job_id": job_id}), 200
 
 
 # ---------------------------------------------------------------------------
