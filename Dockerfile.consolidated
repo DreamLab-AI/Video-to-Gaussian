@@ -146,7 +146,7 @@ RUN cd /opt/comfyui/custom_nodes && \
 # ---------------------------------------------------------------------------
 # Note: sam2 pulls antlr4/iopath which fail on Python 3.12.
 # Install sam2 from git with relaxed deps, skip open3d (no 3.12 wheels).
-RUN pip3 install --break-system-packages \
+RUN pip3 install --break-system-packages --ignore-installed \
         trimesh xatlas pymeshfix fast-simplification scikit-image \
         pillow piexif av yt-dlp huggingface_hub requests aiohttp flask \
         plyfile numpy scipy opencv-python-headless \
