@@ -37,12 +37,13 @@ if [ -d "/opt/comfyui" ]; then
     done
 fi
 
-# Start Xvfb
-Xvfb :1 -screen 0 1920x1080x24 &
+# Start Xvfb (clean up stale locks from previous runs)
+rm -f /tmp/.X1-lock /tmp/.X11-unix/X1 2>/dev/null || true
+Xvfb :1 -screen 0 1920x1080x24 -ac +extension GLX +render -noreset &
 sleep 1
 export DISPLAY=:1
-fluxbox &
-x11vnc -display :1 -forever -nopw -rfbport 5901 -bg 2>/dev/null
+fluxbox &>/dev/null &
+x11vnc -display :1 -forever -nopw -shared -rfbport 5901 -bg 2>/dev/null || true
 
 echo "VNC on port 5901"
 

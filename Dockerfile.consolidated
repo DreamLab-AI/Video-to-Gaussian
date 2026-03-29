@@ -148,7 +148,7 @@ RUN cd /opt/comfyui/custom_nodes && \
 # Install sam2 from git with relaxed deps, skip open3d (no 3.12 wheels).
 RUN pip3 install --break-system-packages --ignore-installed \
         trimesh xatlas pymeshfix fast-simplification scikit-image \
-        pillow piexif av yt-dlp huggingface_hub requests aiohttp flask \
+        pillow piexif av yt-dlp huggingface_hub requests aiohttp flask sqlalchemy \
         plyfile numpy scipy opencv-python-headless \
         segment-anything \
     && pip3 install --break-system-packages \
