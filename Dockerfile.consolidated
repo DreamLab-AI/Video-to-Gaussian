@@ -229,19 +229,12 @@ RUN mkdir -p /opt/models/diffusion_models \
     && mkdir -p /data/output /data/input
 
 # Non-root user for Claude Code (refuses to run as root)
-# Handle case where UID 1000 already exists (e.g. 'ubuntu' in base image)
-RUN existing_user=$(getent passwd 1000 | cut -d: -f1) && \
-    if [ -n "$existing_user" ] && [ "$existing_user" != "gaussian" ]; then \
-        usermod -l gaussian -d /home/gaussian -m "$existing_user" 2>/dev/null || true; \
-        groupmod -n gaussian "$existing_user" 2>/dev/null || true; \
-    elif [ -z "$existing_user" ]; then \
-        useradd -m -u 1000 -s /bin/bash gaussian; \
-    fi && \
-    usermod -aG video,audio gaussian 2>/dev/null || true && \
-    echo "gaussian ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers && \
-    mkdir -p /home/gaussian/.claude /home/gaussian/.config && \
-    chown -R gaussian:gaussian /home/gaussian /data /opt/output 2>/dev/null || true && \
-    chown -R gaussian:gaussian /opt/gaussian-toolkit 2>/dev/null || true
+# Ubuntu 24.04 has 'ubuntu' at uid 1000 — use it directly
+RUN echo "ubuntu ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers && \
+    usermod -aG video,audio ubuntu 2>/dev/null || true && \
+    mkdir -p /home/ubuntu/.claude /home/ubuntu/.config && \
+    chown -R ubuntu:ubuntu /home/ubuntu /data /opt/output 2>/dev/null || true && \
+    chown -R ubuntu:ubuntu /opt/gaussian-toolkit 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
 # PHASE 12: VNC + supervisord configuration
