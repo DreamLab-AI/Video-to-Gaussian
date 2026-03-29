@@ -664,14 +664,12 @@ class PipelineOrchestrator:
             self.mcp.training_start()
         except Exception as exc:
             logger.info("MCP not available (expected in headless Docker): %s", exc)
-                success=False, state=self._state,
-                error=f"MCP training_start failed: {exc}",
-            )
 
-        # Wait for training to complete
+        # Training metrics from CLI output or MCP
+        self._training_metrics = None
         try:
             final_state = self.mcp.wait_training_complete(poll_interval=10.0)
-        except McpError as exc:
+        except Exception as exc:
             return StageResult(
                 success=False, state=self._state,
                 error=f"Training failed: {exc}",
