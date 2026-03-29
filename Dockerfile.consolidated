@@ -194,96 +194,12 @@ RUN mkdir -p /opt/models/diffusion_models \
 # ---------------------------------------------------------------------------
 RUN mkdir -p /var/log/supervisor /var/run/supervisor /root/.fluxbox
 
-RUN cat > /etc/supervisor/conf.d/gaussian-toolkit.conf << 'SUPERVISORD_CONF'
-[supervisord]
-nodaemon=true
-logfile=/var/log/supervisor/supervisord.log
-pidfile=/var/run/supervisor/supervisord.pid
-childlogdir=/var/log/supervisor
-
-[program:xvfb]
-command=/usr/bin/Xvfb :1 -screen 0 1920x1080x24 -ac +extension GLX +render -noreset
-autorestart=true
-priority=10
-stdout_logfile=/var/log/supervisor/xvfb.log
-stderr_logfile=/var/log/supervisor/xvfb-err.log
-
-[program:fluxbox]
-command=/usr/bin/fluxbox
-environment=DISPLAY=":1"
-autorestart=true
-priority=20
-depends_on=xvfb
-stdout_logfile=/var/log/supervisor/fluxbox.log
-stderr_logfile=/var/log/supervisor/fluxbox-err.log
-
-[program:x11vnc]
-command=/usr/bin/x11vnc -display :1 -forever -shared -nopw -rfbport 5901
-autorestart=true
-priority=30
-depends_on=xvfb
-stdout_logfile=/var/log/supervisor/x11vnc.log
-stderr_logfile=/var/log/supervisor/x11vnc-err.log
-
-[program:comfyui]
-command=python3 /opt/comfyui/main.py --listen 0.0.0.0 --port 8188 --cuda-device 1 --preview-method auto
-directory=/opt/comfyui
-environment=DISPLAY=":1",CUDA_VISIBLE_DEVICES="1"
-autorestart=true
-priority=40
-startretries=5
-startsecs=10
-stdout_logfile=/var/log/supervisor/comfyui.log
-stderr_logfile=/var/log/supervisor/comfyui-err.log
-
-[program:web-interface]
-command=python3 /opt/web-interface/app.py
-directory=/opt/web-interface
-autorestart=true
-priority=50
-stdout_logfile=/var/log/supervisor/web-interface.log
-stderr_logfile=/var/log/supervisor/web-interface-err.log
-SUPERVISORD_CONF
+COPY docker/supervisord.conf /etc/supervisor/conf.d/gaussian-toolkit.conf
 
 # ---------------------------------------------------------------------------
 # PHASE 13: Entrypoint
 # ---------------------------------------------------------------------------
-RUN cat > /opt/entrypoint.sh << 'ENTRYPOINT_EOF'
-#!/bin/bash
-set -e
-
-echo "============================================"
-echo " LichtFeld Studio / Gaussian Toolkit"
-echo " Starting up..."
-echo "============================================"
-
-# ---- Step 1: Copy models from staging on first run ----
-MARKER="/opt/models/.initialized"
-if [ ! -f "$MARKER" ] && [ -d "/models-staging" ] && [ "$(ls -A /models-staging 2>/dev/null)" ]; then
-    echo "[init] Copying models from /models-staging to /opt/models ..."
-    cp -rn /models-staging/* /opt/models/ 2>/dev/null || true
-    touch "$MARKER"
-    echo "[init] Model staging complete."
-else
-    echo "[init] Models already initialized or no staging data."
-fi
-
-# ---- Step 2: Create ComfyUI model symlinks ----
-if [ -d "/opt/comfyui/models" ]; then
-    for subdir in diffusion_models text_encoders vae loras; do
-        if [ -d "/opt/models/$subdir" ] && [ ! -L "/opt/comfyui/models/$subdir" ]; then
-            rm -rf "/opt/comfyui/models/$subdir" 2>/dev/null || true
-            ln -sf "/opt/models/$subdir" "/opt/comfyui/models/$subdir"
-        fi
-    done
-    echo "[init] ComfyUI model symlinks configured."
-fi
-
-# ---- Step 3: Start supervisord ----
-echo "[init] Starting supervisord ..."
-exec /usr/bin/supervisord -c /etc/supervisor/supervisord.conf
-ENTRYPOINT_EOF
-
+COPY docker/entrypoint.sh /opt/entrypoint.sh
 RUN chmod +x /opt/entrypoint.sh
 
 # ---------------------------------------------------------------------------
