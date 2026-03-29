@@ -96,14 +96,14 @@ def _launch_claude_code(job_id: str, output_dir: str) -> bool:
         f"and mark completion at http://localhost:7860/api/job/{job_id}/complete"
     )
 
-    env_vars = ["HOME=/home/ubuntu", "TERM=xterm-256color"]
+    # Build environment — web interface runs as ubuntu user so
+    # Claude Code has direct access to OAuth session in ~/.claude/
+    env = {**os.environ, "TERM": "xterm-256color"}
     if api_key:
-        env_vars.append(f"ANTHROPIC_API_KEY={api_key}")
-    # If no API key, Claude Code will use the OAuth session from /home/ubuntu/.claude/
+        env["ANTHROPIC_API_KEY"] = api_key
+    # If no API key, Claude Code uses the OAuth session from ~/.claude/
 
     cmd = [
-        "sudo", "-u", "ubuntu", "-E",
-        "env", *env_vars,
         "claude",
         "--dangerously-skip-permissions",
         "-p", prompt,
@@ -114,6 +114,7 @@ def _launch_claude_code(job_id: str, output_dir: str) -> bool:
         proc = subprocess.Popen(
             cmd,
             cwd="/opt/gaussian-toolkit",
+            env=env,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
