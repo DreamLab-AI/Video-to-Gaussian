@@ -57,13 +57,28 @@ graph TB
     MODELS -.->|bind mount| CUI
 ```
 
+## Museum Tour Run (2026-03-29) -- Pre-Fix Baseline
+
+| Metric | Value |
+|--------|-------|
+| Input | 90s museum tour, handheld |
+| Extraction | 180 frames at ~2fps (no frame selection) |
+| COLMAP registration | 21/180 (11.7%) -- **failure** |
+| SAM3 | Fell back to SAM2 (BPE vocab missing) |
+| Pipeline | Stopped after training (no mesh/USD) |
+
+**Issues**: No frame selection, exhaustive matcher, missing SAM3 BPE, incomplete pipeline prompt.
+
+All fixed in this commit. Rerun expected to achieve 70%+ registration with 80 selected frames + sequential matcher.
+
 ## Pipeline Timing Breakdown
 
 | Stage | Duration | Notes |
 |-------|----------|-------|
-| Frame Extraction (PyAV) | ~5 s | CPU-only, 1 fps default |
+| Frame Extraction (PyAV) | ~5 s | CPU-only, 4 fps default (oversample) |
+| Frame Selection | ~10 s | Quality scoring + diversity, target 80 frames |
 | COLMAP Feature Extraction | ~30 s | GPU SIFT |
-| COLMAP Exhaustive Matching | ~2 min | GPU + CPU |
+| COLMAP Sequential Matching | ~1 min | Sequential matcher (video), faster than exhaustive |
 | COLMAP Sparse Reconstruction | ~20 min | CPU-bound, 32-48 cores |
 | COLMAP Image Undistortion | ~10 s | CPU + disk I/O |
 | 3DGS Training (7k iterations) | 2 min 15 s | 1M gaussians, CUDA kernels, 99% GPU util |

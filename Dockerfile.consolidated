@@ -27,6 +27,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libopenimageio-dev openimageio-tools libopencv-dev \
         x11vnc xvfb fluxbox \
         supervisor nginx \
+        sudo \
         jq zip unzip \
     && rm -rf /var/lib/apt/lists/*
 
@@ -187,6 +188,14 @@ RUN curl -fsSL https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.x86_
 RUN git clone --depth 1 https://github.com/facebookresearch/sam3.git /opt/sam3-repo && \
     cd /opt/sam3-repo && pip3 install --break-system-packages -e . || \
     echo "SAM3 repo install failed — text-prompted segmentation unavailable"
+
+# Verify SAM3 BPE vocab file exists (required for text-prompted segmentation)
+RUN test -f /opt/sam3-repo/sam3/assets/bpe_simple_vocab_16e6.txt.gz && \
+    echo "SAM3 BPE vocab OK" || \
+    echo "WARNING: SAM3 BPE vocab not found at /opt/sam3-repo/sam3/assets/bpe_simple_vocab_16e6.txt.gz"
+
+# Set SAM3 BPE path environment variable so the segmentor can find it
+ENV SAM3_BPE_PATH="/opt/sam3-repo/sam3/assets/bpe_simple_vocab_16e6.txt.gz"
 
 # ---------------------------------------------------------------------------
 # PHASE 9: Pipeline code from gaussian-toolkit repo

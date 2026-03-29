@@ -34,6 +34,17 @@ logger = logging.getLogger(__name__)
 # Re-use the canonical SegmentationResult and PromptSpec from sam2_segmentor
 from pipeline.sam2_segmentor import SegmentationResult, PromptSpec
 
+# Ensure SAM3 can find the BPE vocab file before importing
+_SAM3_BPE_PATH = os.environ.get(
+    "SAM3_BPE_PATH",
+    "/opt/sam3-repo/sam3/assets/bpe_simple_vocab_16e6.txt.gz",
+)
+if Path(_SAM3_BPE_PATH).exists():
+    os.environ["SAM3_BPE_PATH"] = _SAM3_BPE_PATH
+    logger.debug("SAM3 BPE vocab found at %s", _SAM3_BPE_PATH)
+else:
+    logger.warning("SAM3 BPE vocab not found at %s; text-prompted segmentation may fail", _SAM3_BPE_PATH)
+
 # Detect SAM3 availability at import time
 _SAM3_AVAILABLE = False
 try:

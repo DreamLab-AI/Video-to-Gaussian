@@ -64,21 +64,43 @@ Reconstruct 3D polygonal scenes in USD format from video, via Gaussian Splatting
 |-----------|--------|-------------|
 | Audio-to-scene-graph naming | TBD (`src/pipeline/audio_namer.py`) | Extract audio track from input video using FFmpeg, transcribe with OpenAI Whisper (or whisper.cpp for local inference), run NER/keyword extraction on the transcript, and use the extracted terms to automatically name objects in the USD scene graph. For example, if the narrator says "the red chair by the window", the pipeline would match segmented objects by visual description and assign `red_chair` as the prim name instead of `object_017`. This closes the gap between human-legible scene descriptions and the anonymous object IDs that segmentation produces. Depends on: working SAM3 segmentation (for object descriptions) and USD assembly (for prim naming). |
 
+### Museum Tour Run (2026-03-29)
+
+End-to-end test with a 90-second museum tour video on the consolidated Docker (dual RTX 6000 Ada).
+
+| Metric | Value | Notes |
+|--------|-------|-------|
+| Input video | 90s museum tour MP4 | Handheld walkthrough |
+| Extraction FPS | 4.0 | Oversampled |
+| Frames extracted | 180 | At 4fps |
+| Frames selected | 80 (target) | Frame selector with quality + diversity |
+| COLMAP matcher | sequential | Changed from exhaustive for video |
+| COLMAP registration | 21/180 (11.7%) | **FAILED** -- all 180 sent without frame selection |
+| SAM3 status | Fallback to SAM2 | BPE vocab file not found in container |
+| Pipeline completion | Stopped after training | Claude Code did not continue to mesh/USD |
+
+**Root causes identified and fixed:**
+1. Frame selection was not invoked -- all 180 frames sent to COLMAP, causing low registration rate (21/180). Fix: default to 4fps extraction + select best 80 frames.
+2. SAM3 BPE vocab file at `/opt/sam3-repo/sam3/assets/bpe_simple_vocab_16e6.txt.gz` was not on the Python path. Fix: added `SAM3_BPE_PATH` env var and config field.
+3. COLMAP used exhaustive matcher, too slow for 180 frames. Fix: default to sequential matcher for video input.
+4. Claude Code auto-launch binary path was `claude` (not found in PATH). Fix: use `/usr/local/bin/claude`.
+5. Pipeline prompt did not instruct continuation past training. Fix: explicit all-stages prompt.
+
 ### Known Issues
 
-1. **COLMAP sparse reconstruction is the bottleneck** -- ~20 minutes on 32 cores for 15 frames. No GPU acceleration available for the sparse BA solver. Workaround: use fewer frames or switch to incremental mapper.
+1. **COLMAP sparse reconstruction is the bottleneck** -- ~20 minutes on 32 cores for 15 frames. No GPU acceleration available for the sparse BA solver. Workaround: use fewer frames or switch to incremental mapper. For video input, use the sequential matcher instead of exhaustive.
 
-2. **SAM2 prompt strategy** -- Currently using grid-point prompts. Quality depends heavily on prompt placement. SAM3 upgrade will replace this with text+visual concept prompts (4M concepts, no prompt engineering needed).
+2. **Frame selection is critical** -- Sending all extracted frames to COLMAP causes very low registration rates (11.7% with 180 frames). Always run frame selection to curate 60-80 diverse, high-quality frames first.
 
-3. **Mask projection noise on thin geometry** -- The Gaussian-space voting from 2D masks produces noisy labels on thin structures (branches, wires). Depth-weighted voting and multi-view consistency checks are needed.
+3. **SAM3 BPE vocab dependency** -- SAM3 text-prompted segmentation requires `bpe_simple_vocab_16e6.txt.gz` from the sam3 repo assets. The `SAM3_BPE_PATH` environment variable must point to it. Falls back to SAM2 if missing.
 
-4. **Mesh extraction produces non-manifold geometry** -- Marching Cubes on the Gaussian density field can produce self-intersecting faces. TSDF fusion now available as alternative (22K verts, 49K faces).
+4. **Mask projection noise on thin geometry** -- The Gaussian-space voting from 2D masks produces noisy labels on thin structures (branches, wires). Depth-weighted voting and multi-view consistency checks are needed.
 
-5. **No texture UV unwrapping** -- Meshes are vertex-coloured only. xatlas is installed but not integrated for proper UV unwrapping and texture baking.
+5. **Mesh extraction produces non-manifold geometry** -- Marching Cubes on the Gaussian density field can produce self-intersecting faces. TSDF fusion now available as alternative (22K verts, 49K faces).
 
-6. **USD variant sets are placeholder** -- The assembler creates Gaussian and Mesh variant sets but the Gaussian variant currently stores only a path reference, not embedded splat data.
+6. **No texture UV unwrapping** -- Meshes are vertex-coloured only. xatlas is installed but not integrated for proper UV unwrapping and texture baking.
 
-7. **SAM3 integration pending** -- SAM3 client built (`sam3d_client.py`) but full integration with the consolidated Docker container still in progress.
+7. **USD variant sets are placeholder** -- The assembler creates Gaussian and Mesh variant sets but the Gaussian variant currently stores only a path reference, not embedded splat data.
 
 ## Target Pipeline
 

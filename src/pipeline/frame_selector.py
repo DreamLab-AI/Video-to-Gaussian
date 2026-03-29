@@ -38,7 +38,7 @@ class FrameScore:
 
 @dataclass
 class SelectionConfig:
-    target_frames: int = 150
+    target_frames: int = 80
     min_frames: int = 60
     max_frames: int = 300
     blur_threshold: float = 50.0

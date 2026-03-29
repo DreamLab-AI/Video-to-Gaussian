@@ -91,7 +91,11 @@ def _launch_claude_code(job_id: str, output_dir: str) -> bool:
     prompt = (
         f"Process the video pipeline job at {output_dir}. "
         f"Job ID is {job_id}. "
-        f"Follow the instructions in CLAUDE.md. "
+        f"Follow the instructions in CLAUDE.md step by step. "
+        f"You MUST complete ALL stages: ingest → select_frames → reconstruct → "
+        f"train → segment → extract_objects → mesh_objects → assemble_usd → validate. "
+        f"Do NOT stop after training. Continue through segmentation, mesh extraction, "
+        f"and USD assembly. "
         f"Report progress to the web API at http://localhost:7860/api/job/{job_id}/stage "
         f"and mark completion at http://localhost:7860/api/job/{job_id}/complete"
     )
@@ -103,26 +107,31 @@ def _launch_claude_code(job_id: str, output_dir: str) -> bool:
         env["ANTHROPIC_API_KEY"] = api_key
     # If no API key, Claude Code uses the OAuth session from ~/.claude/
 
+    claude_bin = "/usr/local/bin/claude"
     cmd = [
-        "claude",
+        claude_bin,
         "--dangerously-skip-permissions",
         "-p", prompt,
         "--allowedTools", "Bash,Read,Write,Edit",
     ]
 
+    logger.info("Launching Claude Code: %s", " ".join(cmd[:4]) + " ...")
+
     try:
+        log_path = Path(output_dir) / "claude_launch.log"
+        log_file = open(log_path, "w")
         proc = subprocess.Popen(
             cmd,
             cwd="/opt/gaussian-toolkit",
             env=env,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
             start_new_session=True,
         )
-        logger.info("Launched Claude Code (pid=%d) for job %s", proc.pid, job_id)
+        logger.info("Launched Claude Code (pid=%d) for job %s, log: %s", proc.pid, job_id, log_path)
         return True
     except FileNotFoundError:
-        logger.warning("Claude Code binary or sudo not found — cannot auto-launch")
+        logger.warning("Claude Code binary not found at %s — cannot auto-launch", claude_bin)
         return False
     except Exception as exc:
         logger.error("Failed to launch Claude Code for job %s: %s", job_id, exc)

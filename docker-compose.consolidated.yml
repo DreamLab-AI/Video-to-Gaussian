@@ -15,6 +15,7 @@ services:
       - DISPLAY=:1
       - HF_TOKEN=${HF_TOKEN}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - SAM3_BPE_PATH=/opt/sam3-repo/sam3/assets/bpe_simple_vocab_16e6.txt.gz
 
     deploy:
       resources:

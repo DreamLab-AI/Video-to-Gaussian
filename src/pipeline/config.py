@@ -14,12 +14,13 @@ from typing import Any
 @dataclass
 class IngestConfig:
     """Frame extraction parameters."""
-    fps: float = 1.0
+    fps: float = 4.0
     max_image_size: int = 2000
     min_frames: int = 20
     max_frames: int = 500
     blur_threshold: float = 100.0
     exposure_range: tuple[float, float] = (0.1, 0.9)
+    target_frames: int = 80
 
 
 @dataclass
@@ -29,7 +30,7 @@ class ReconstructConfig:
     colmap_exe: str = "/usr/local/bin/colmap"
     use_fisheye: bool = False
     min_scale: float = 0.5
-    matcher: str = "exhaustive"
+    matcher: str = "sequential"
 
 
 @dataclass
@@ -60,6 +61,8 @@ class DecomposeConfig:
         "walls", "floor", "ceiling", "fixtures", "doorways",
     ])
     sam3_fallback_to_sam2: bool = True
+    sam3_bpe_path: str = "/opt/sam3-repo/sam3/assets/bpe_simple_vocab_16e6.txt.gz"
+    sam3_checkpoint_path: str = ""  # auto-detect from HF cache
 
 
 @dataclass
