@@ -144,10 +144,19 @@ RUN cd /opt/comfyui/custom_nodes && \
 # ---------------------------------------------------------------------------
 # PHASE 8: Python pipeline dependencies
 # ---------------------------------------------------------------------------
+# Note: sam2 pulls antlr4/iopath which fail on Python 3.12.
+# Install sam2 from git with relaxed deps, skip open3d (no 3.12 wheels).
 RUN pip3 install --break-system-packages \
-        sam2 segment-anything trimesh xatlas pymeshfix fast-simplification scikit-image \
+        trimesh xatlas pymeshfix fast-simplification scikit-image \
         pillow piexif av yt-dlp huggingface_hub requests aiohttp flask \
-        open3d plyfile numpy scipy opencv-python-headless
+        plyfile numpy scipy opencv-python-headless \
+        segment-anything \
+    && pip3 install --break-system-packages --no-deps \
+        "antlr4-python3-runtime==4.9.3" \
+    && pip3 install --break-system-packages \
+        "iopath @ git+https://github.com/facebookresearch/iopath.git" \
+    && pip3 install --break-system-packages \
+        "sam2 @ git+https://github.com/facebookresearch/sam2.git"
 
 # USD requires python3.11 — isolated venv
 RUN python3.11 -m venv /opt/venv-usd && \
