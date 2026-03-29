@@ -26,6 +26,7 @@ from flask import (
     render_template,
     request,
     send_file,
+    send_from_directory,
     url_for,
 )
 from werkzeug.utils import secure_filename
@@ -481,6 +482,61 @@ def api_complete_job(job_id: str) -> tuple[Response, int]:
     if not ok:
         return jsonify({"error": "Job not found"}), 404
     return jsonify({"status": "completed" if success else "failed", "job_id": job_id}), 200
+
+
+# ---------------------------------------------------------------------------
+# Preview image carousel endpoints
+# ---------------------------------------------------------------------------
+
+OUTPUT_DIR = Path(os.environ.get("LFS_OUTPUT_DIR", "/data/output"))
+
+
+@app.route("/api/job/<job_id>/previews")
+def get_previews(job_id: str) -> tuple[Response, int]:
+    """Return list of preview images found in the job output directory."""
+    safe_id = secure_filename(job_id)
+    job_dir = OUTPUT_DIR / safe_id
+    if not job_dir.is_dir():
+        return jsonify([]), 200
+
+    previews: list[dict] = []
+    for pattern in ("**/*.png", "**/*.jpg", "**/*.jpeg"):
+        for img in job_dir.glob(pattern):
+            try:
+                rel = img.relative_to(job_dir)
+            except ValueError:
+                continue
+            stage = rel.parts[0] if len(rel.parts) > 1 else "output"
+            try:
+                size_kb = img.stat().st_size // 1024
+            except OSError:
+                size_kb = 0
+            previews.append({
+                "path": str(rel),
+                "url": f"/api/job/{safe_id}/file/{rel}",
+                "stage": stage,
+                "size_kb": size_kb,
+            })
+
+    previews.sort(key=lambda p: p["path"])
+    return jsonify(previews), 200
+
+
+@app.route("/api/job/<job_id>/file/<path:filepath>")
+def serve_job_file(job_id: str, filepath: str) -> Response:
+    """Serve a file from a job's output directory."""
+    safe_id = secure_filename(job_id)
+    job_dir = OUTPUT_DIR / safe_id
+
+    # Prevent directory traversal
+    resolved = (job_dir / filepath).resolve()
+    if not str(resolved).startswith(str(job_dir.resolve())):
+        abort(403)
+
+    if not resolved.is_file():
+        abort(404)
+
+    return send_from_directory(str(job_dir), filepath)
 
 
 # ---------------------------------------------------------------------------

@@ -238,10 +238,25 @@
             <div id="stage-pipeline" class="flex items-center gap-1 min-w-max"></div>
           </div>
 
-          <!-- Previews -->
+          <!-- Previews (stage-keyed from pipeline runner) -->
           <div id="preview-section" class="hidden px-6 py-4 border-b border-lf-border">
             <h4 class="text-sm font-medium text-lf-muted mb-3">Stage Previews</h4>
             <div id="preview-grid" class="grid grid-cols-2 md:grid-cols-4 gap-3"></div>
+          </div>
+
+          <!-- Output Image Carousel (scans output directory) -->
+          <div id="carousel-section" class="hidden px-6 py-4 border-b border-lf-border">
+            <div class="flex items-center justify-between mb-3">
+              <h4 class="text-sm font-medium text-lf-muted">Output Images</h4>
+              <div class="flex items-center gap-3">
+                <select id="carousel-stage-filter" onchange="filterCarousel()"
+                        class="text-xs bg-lf-bg border border-lf-border rounded px-2 py-1 text-lf-muted focus:outline-none focus:border-lf-accent">
+                  <option value="all">All stages</option>
+                </select>
+                <span id="carousel-count" class="text-xs text-lf-muted"></span>
+              </div>
+            </div>
+            <div id="carousel-strip" class="overflow-x-auto whitespace-nowrap pb-2 scrollbar-thin"></div>
           </div>
 
           <!-- Log Viewer -->
@@ -258,6 +273,30 @@
     <footer class="border-t border-lf-border px-6 py-3 text-center text-xs text-lf-muted">
       LichtFeld Studio &mdash; Pipeline controlled by Claude Code in the Terminal tab
     </footer>
+  </div>
+
+  <!-- Lightbox Modal -->
+  <div id="lightbox" class="fixed inset-0 bg-black/90 hidden z-50 flex items-center justify-center cursor-pointer" onclick="closeLightbox(event)">
+    <button onclick="navigateLightbox(-1); event.stopPropagation();"
+            class="absolute left-4 top-1/2 -translate-y-1/2 p-2 text-white/60 hover:text-white transition z-10">
+      <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
+      </svg>
+    </button>
+    <button onclick="navigateLightbox(1); event.stopPropagation();"
+            class="absolute right-4 top-1/2 -translate-y-1/2 p-2 text-white/60 hover:text-white transition z-10">
+      <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+      </svg>
+    </button>
+    <button onclick="document.getElementById('lightbox').classList.add('hidden'); event.stopPropagation();"
+            class="absolute top-4 right-4 p-2 text-white/60 hover:text-white transition z-10">
+      <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+      </svg>
+    </button>
+    <img id="lightbox-img" class="max-h-[90vh] max-w-[90vw] object-contain" onclick="event.stopPropagation()">
+    <p id="lightbox-caption" class="absolute bottom-4 left-1/2 -translate-x-1/2 text-gray-400 text-sm bg-black/60 px-3 py-1 rounded"></p>
   </div>
 
   <script>
@@ -784,6 +823,114 @@
           if (e.key === 'Enter') saveAndTestKey();
         });
       }
+    });
+
+    // ---- Output Image Carousel ----
+    let carouselImages = [];
+    let carouselRefreshTimer = null;
+
+    function loadCarouselPreviews(jobId) {
+      fetch(`/api/job/${jobId}/previews`)
+        .then(r => r.json())
+        .then(images => {
+          carouselImages = images;
+          const section = document.getElementById('carousel-section');
+          if (images.length === 0) {
+            section.classList.add('hidden');
+            return;
+          }
+          section.classList.remove('hidden');
+
+          // Populate stage filter
+          const stages = [...new Set(images.map(i => i.stage))].sort();
+          const filter = document.getElementById('carousel-stage-filter');
+          const currentVal = filter.value;
+          filter.innerHTML = '<option value="all">All stages</option>' +
+            stages.map(s => `<option value="${escHtml(s)}">${escHtml(s)}</option>`).join('');
+          filter.value = stages.includes(currentVal) ? currentVal : 'all';
+
+          filterCarousel();
+        })
+        .catch(() => {});
+    }
+
+    function filterCarousel() {
+      const filter = document.getElementById('carousel-stage-filter').value;
+      const filtered = filter === 'all' ? carouselImages : carouselImages.filter(i => i.stage === filter);
+      document.getElementById('carousel-count').textContent = filtered.length + ' image' + (filtered.length !== 1 ? 's' : '');
+
+      const strip = document.getElementById('carousel-strip');
+      if (filtered.length === 0) {
+        strip.innerHTML = '<span class="text-xs text-lf-muted">No images for this stage yet.</span>';
+        return;
+      }
+
+      strip.innerHTML = filtered.map((img, idx) => `
+        <div class="inline-block mr-2 align-top group relative">
+          <img src="${escHtml(img.url)}" loading="lazy"
+               class="h-24 rounded cursor-pointer border border-lf-border hover:border-lf-accent transition object-cover"
+               onclick="showFullPreview(${idx}, '${filter}')"
+               onerror="this.parentElement.style.display='none'"
+               title="${escHtml(img.path)} (${img.size_kb} KB)">
+          <span class="absolute bottom-0 left-0 right-0 bg-black/70 text-[10px] text-lf-muted px-1 py-0.5 rounded-b truncate pointer-events-none">
+            ${escHtml(img.stage)}
+          </span>
+        </div>
+      `).join('');
+    }
+
+    function startCarouselRefresh(jobId) {
+      stopCarouselRefresh();
+      loadCarouselPreviews(jobId);
+      carouselRefreshTimer = setInterval(() => loadCarouselPreviews(jobId), 30000);
+    }
+
+    function stopCarouselRefresh() {
+      if (carouselRefreshTimer) {
+        clearInterval(carouselRefreshTimer);
+        carouselRefreshTimer = null;
+      }
+    }
+
+    // ---- Lightbox ----
+    let lightboxList = [];
+    let lightboxIndex = 0;
+
+    function showFullPreview(idx, stageFilter) {
+      const filtered = stageFilter === 'all' ? carouselImages : carouselImages.filter(i => i.stage === stageFilter);
+      lightboxList = filtered;
+      lightboxIndex = idx;
+      updateLightbox();
+      document.getElementById('lightbox').classList.remove('hidden');
+    }
+
+    function updateLightbox() {
+      if (lightboxList.length === 0) return;
+      const img = lightboxList[lightboxIndex];
+      document.getElementById('lightbox-img').src = img.url;
+      document.getElementById('lightbox-caption').textContent =
+        `${img.path}  (${img.size_kb} KB)  [${lightboxIndex + 1}/${lightboxList.length}]`;
+    }
+
+    function navigateLightbox(dir) {
+      if (lightboxList.length === 0) return;
+      lightboxIndex = (lightboxIndex + dir + lightboxList.length) % lightboxList.length;
+      updateLightbox();
+    }
+
+    function closeLightbox(e) {
+      if (e.target === document.getElementById('lightbox')) {
+        document.getElementById('lightbox').classList.add('hidden');
+      }
+    }
+
+    // Keyboard navigation for lightbox
+    document.addEventListener('keydown', (e) => {
+      const lb = document.getElementById('lightbox');
+      if (lb.classList.contains('hidden')) return;
+      if (e.key === 'Escape') lb.classList.add('hidden');
+      else if (e.key === 'ArrowLeft') navigateLightbox(-1);
+      else if (e.key === 'ArrowRight') navigateLightbox(1);
     });
 
     // ---- Init ----
