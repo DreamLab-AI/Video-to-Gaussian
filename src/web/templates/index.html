@@ -68,6 +68,56 @@
       </div>
     </header>
 
+    <!-- API Key Setup Banner -->
+    <div id="setup-banner" class="hidden border-b border-lf-border">
+      <div id="setup-needed" class="hidden max-w-6xl mx-auto px-6 py-6">
+        <div class="bg-lf-surface rounded-xl border border-lf-warning/40 p-6">
+          <div class="flex items-start gap-4">
+            <div class="w-10 h-10 rounded-lg bg-lf-warning/20 flex items-center justify-center flex-shrink-0 mt-0.5">
+              <svg class="w-5 h-5 text-lf-warning" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                      d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"/>
+              </svg>
+            </div>
+            <div class="flex-1">
+              <h3 class="font-semibold text-lg mb-1">Anthropic API Key Required</h3>
+              <p class="text-sm text-lf-muted mb-4">
+                To auto-launch Claude Code for video processing, enter your Anthropic API key below.
+                The key is stored securely on the persistent data volume and never exposed in logs or the UI.
+              </p>
+              <div class="flex items-center gap-3">
+                <input type="password" id="api-key-input" placeholder="sk-ant-api03-..."
+                       class="flex-1 max-w-md bg-lf-bg border border-lf-border rounded-lg px-4 py-2 text-sm mono
+                              text-lf-text placeholder-lf-muted/50 focus:outline-none focus:border-lf-accent transition">
+                <button onclick="saveAndTestKey()" id="save-key-btn"
+                        class="px-4 py-2 bg-lf-accent text-white text-sm font-medium rounded-lg hover:bg-lf-accent-light transition
+                               disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2">
+                  <span id="save-key-text">Save &amp; Test</span>
+                  <svg id="save-key-spinner" class="hidden w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                  </svg>
+                </button>
+              </div>
+              <p id="key-test-result" class="hidden text-sm mt-3"></p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="setup-ok" class="hidden max-w-6xl mx-auto px-6 py-3">
+        <div class="flex items-center justify-between">
+          <div class="flex items-center gap-2">
+            <svg class="w-4 h-4 text-lf-success" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+            </svg>
+            <span class="text-sm text-lf-muted">API Key: <span id="key-display" class="mono text-lf-text"></span></span>
+          </div>
+          <button onclick="toggleKeyEdit()" class="text-xs text-lf-muted hover:text-lf-accent transition">Change key</button>
+        </div>
+      </div>
+    </div>
+
     <!-- Tab Navigation -->
     <nav class="border-b border-lf-border px-6">
       <div class="flex gap-0">
@@ -615,7 +665,125 @@
       iframe.src = 'http://' + host + ':7681';
     }
 
+    // ---- API Key Setup ----
+    let apiKeyConfigured = false;
+
+    function checkConfig() {
+      fetch('/api/config')
+        .then(r => r.json())
+        .then(data => {
+          apiKeyConfigured = data.api_key_configured;
+          const banner = document.getElementById('setup-banner');
+          const needed = document.getElementById('setup-needed');
+          const ok = document.getElementById('setup-ok');
+
+          banner.classList.remove('hidden');
+
+          if (data.api_key_configured) {
+            needed.classList.add('hidden');
+            ok.classList.remove('hidden');
+            document.getElementById('key-display').textContent = data.api_key_redacted || '';
+          } else {
+            needed.classList.remove('hidden');
+            ok.classList.add('hidden');
+          }
+        })
+        .catch(() => {});
+    }
+
+    function saveAndTestKey() {
+      const input = document.getElementById('api-key-input');
+      const key = input.value.trim();
+      if (!key) { input.focus(); return; }
+
+      const btn = document.getElementById('save-key-btn');
+      const spinner = document.getElementById('save-key-spinner');
+      const btnText = document.getElementById('save-key-text');
+      const result = document.getElementById('key-test-result');
+
+      btn.disabled = true;
+      spinner.classList.remove('hidden');
+      btnText.textContent = 'Testing...';
+      result.classList.add('hidden');
+
+      // Save first, then test
+      fetch('/api/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ api_key: key })
+      })
+      .then(r => r.json())
+      .then(saveData => {
+        if (saveData.error) {
+          showKeyResult(false, saveData.error);
+          resetKeyBtn();
+          return;
+        }
+
+        // Now test
+        return fetch('/api/config/test', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ api_key: key })
+        }).then(r => r.json());
+      })
+      .then(testData => {
+        if (!testData) return;
+        showKeyResult(testData.valid, testData.message);
+        if (testData.valid) {
+          input.value = '';
+          checkConfig();
+        }
+        resetKeyBtn();
+      })
+      .catch(err => {
+        showKeyResult(false, 'Network error: ' + err.message);
+        resetKeyBtn();
+      });
+    }
+
+    function showKeyResult(valid, message) {
+      const el = document.getElementById('key-test-result');
+      el.classList.remove('hidden', 'text-lf-success', 'text-lf-error');
+      el.classList.add(valid ? 'text-lf-success' : 'text-lf-error');
+      el.textContent = (valid ? '\u2713 ' : '\u2717 ') + message;
+    }
+
+    function resetKeyBtn() {
+      const btn = document.getElementById('save-key-btn');
+      const spinner = document.getElementById('save-key-spinner');
+      const btnText = document.getElementById('save-key-text');
+      btn.disabled = false;
+      spinner.classList.add('hidden');
+      btnText.textContent = 'Save & Test';
+    }
+
+    function toggleKeyEdit() {
+      const needed = document.getElementById('setup-needed');
+      const ok = document.getElementById('setup-ok');
+      // Toggle: if needed is visible, hide it; else show it
+      if (needed.classList.contains('hidden')) {
+        needed.classList.remove('hidden');
+        ok.classList.add('hidden');
+        document.getElementById('api-key-input').focus();
+      } else {
+        needed.classList.add('hidden');
+        ok.classList.remove('hidden');
+      }
+    }
+
+    // Allow Enter key in input
+    document.addEventListener('DOMContentLoaded', () => {
+      const input = document.getElementById('api-key-input');
+      if (input) {
+        input.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') saveAndTestKey();
+        });
+      }
+    });
+
     // ---- Init ----
+    checkConfig();
     refreshJobs();
     checkHealth();
     setInterval(refreshJobs, 10000);

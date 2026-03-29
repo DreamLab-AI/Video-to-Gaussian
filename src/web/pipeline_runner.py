@@ -16,12 +16,16 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+import subprocess
 import time
 import zipfile
 from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# Persistent API key location (same as app.py)
+_API_KEY_PATH = Path(os.environ.get("LFS_API_KEY_PATH", "/data/.anthropic_key"))
 
 
 def queue_job(job_id: str) -> bool:
@@ -62,8 +66,67 @@ def queue_job(job_id: str) -> bool:
     update_job(job_id, state=JobState.QUEUED)
     append_log(job_id, f"Job queued for Claude Code: {job.filename}")
     append_log(job_id, f"Job directory: {job.output_dir}")
-    append_log(job_id, "Waiting for Claude Code to pick up this job in the terminal...")
+
+    # Attempt to auto-launch Claude Code if an API key is available
+    launched = _launch_claude_code(job_id, job.output_dir)
+    if launched:
+        append_log(job_id, "Claude Code launched automatically with stored API key")
+    else:
+        append_log(job_id, "Waiting for Claude Code to pick up this job in the terminal...")
+
     return True
+
+
+def _launch_claude_code(job_id: str, output_dir: str) -> bool:
+    """Launch Claude Code as a background subprocess to process the job.
+
+    Reads the API key from the persistent volume. If no key is stored,
+    returns False (the user must run Claude Code manually via the terminal).
+    """
+    if not _API_KEY_PATH.exists():
+        logger.info("No API key at %s — skipping auto-launch for job %s", _API_KEY_PATH, job_id)
+        return False
+
+    api_key = _API_KEY_PATH.read_text().strip()
+    if not api_key:
+        return False
+
+    prompt = (
+        f"Process the video pipeline job at {output_dir}. "
+        f"Job ID is {job_id}. "
+        f"Follow the instructions in CLAUDE.md. "
+        f"Report progress to the web API at http://localhost:7860/api/job/{job_id}/stage "
+        f"and mark completion at http://localhost:7860/api/job/{job_id}/complete"
+    )
+
+    cmd = [
+        "sudo", "-u", "ubuntu", "-E",
+        "env",
+        f"ANTHROPIC_API_KEY={api_key}",
+        "HOME=/home/ubuntu",
+        "TERM=xterm-256color",
+        "claude",
+        "--dangerously-skip-permissions",
+        "-p", prompt,
+        "--allowedTools", "Bash,Read,Write,Edit",
+    ]
+
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            cwd="/opt/gaussian-toolkit",
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        logger.info("Launched Claude Code (pid=%d) for job %s", proc.pid, job_id)
+        return True
+    except FileNotFoundError:
+        logger.warning("Claude Code binary or sudo not found — cannot auto-launch")
+        return False
+    except Exception as exc:
+        logger.error("Failed to launch Claude Code for job %s: %s", job_id, exc)
+        return False
 
 
 def update_stage(job_id: str, stage: str, progress: float = 0.0, message: str = "") -> bool:

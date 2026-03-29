@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -21,9 +22,11 @@ from flask import (
     Response,
     abort,
     jsonify,
+    redirect,
     render_template,
     request,
     send_file,
+    url_for,
 )
 from werkzeug.utils import secure_filename
 
@@ -56,6 +59,71 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# API key storage
+# ---------------------------------------------------------------------------
+
+API_KEY_PATH = Path(os.environ.get("LFS_API_KEY_PATH", "/data/.anthropic_key"))
+
+
+def _read_api_key() -> str | None:
+    """Read stored Anthropic API key from persistent volume. Returns None if absent."""
+    if API_KEY_PATH.exists():
+        key = API_KEY_PATH.read_text().strip()
+        return key if key else None
+    return None
+
+
+def _save_api_key(key: str) -> None:
+    """Save Anthropic API key to persistent volume with restricted permissions."""
+    API_KEY_PATH.parent.mkdir(parents=True, exist_ok=True)
+    API_KEY_PATH.write_text(key.strip())
+    try:
+        API_KEY_PATH.chmod(0o600)
+    except OSError:
+        pass  # may not own the file in all container setups
+
+
+def _redact_key(key: str) -> str:
+    """Return a redacted version of the key for display: sk-ant-...last4."""
+    if not key or len(key) < 12:
+        return "****"
+    return key[:7] + "..." + key[-4:]
+
+
+def validate_api_key(key: str) -> tuple[bool, str]:
+    """Test an Anthropic API key by running a minimal Claude Code invocation.
+
+    Returns (success, message).
+    """
+    if not key or not key.strip():
+        return False, "Key is empty"
+
+    env = {**os.environ, "ANTHROPIC_API_KEY": key.strip(), "HOME": "/home/ubuntu"}
+    try:
+        result = subprocess.run(
+            ["claude", "-p", "respond with OK", "--max-turns", "1"],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if "OK" in result.stdout:
+            return True, "Key is valid — Claude Code responded successfully"
+        # Check for common error patterns
+        combined = result.stdout + result.stderr
+        if "Invalid API key" in combined or "invalid_api_key" in combined:
+            return False, "Invalid API key"
+        if "permission" in combined.lower():
+            return False, "API key lacks required permissions"
+        return False, f"Unexpected response: {combined[:200]}"
+    except FileNotFoundError:
+        return False, "Claude Code binary not found — is it installed?"
+    except subprocess.TimeoutExpired:
+        return False, "Validation timed out (30s)"
+    except Exception as exc:
+        return False, f"Validation error: {exc}"
 
 app = Flask(
     __name__,
@@ -272,6 +340,68 @@ def remove_job(job_id: str) -> tuple[Response, int]:
 def health() -> tuple[Response, int]:
     """Health check endpoint."""
     return jsonify({"status": "ok", "timestamp": time.time()}), 200
+
+
+# ---------------------------------------------------------------------------
+# API key / configuration
+# ---------------------------------------------------------------------------
+
+
+@app.route("/setup")
+def setup() -> str:
+    """Dedicated setup page — redirects to index if key already configured."""
+    key = _read_api_key()
+    if key:
+        return redirect(url_for("index"))
+    return render_template("index.html")
+
+
+@app.route("/api/config", methods=["GET"])
+def get_config() -> tuple[Response, int]:
+    """Return current configuration (API key redacted)."""
+    key = _read_api_key()
+    return jsonify({
+        "api_key_configured": key is not None,
+        "api_key_redacted": _redact_key(key) if key else None,
+    }), 200
+
+
+@app.route("/api/config", methods=["POST"])
+def save_config() -> tuple[Response, int]:
+    """Save configuration. Body: {"api_key": "sk-ant-..."}"""
+    data = request.get_json(silent=True) or {}
+    key = data.get("api_key", "").strip()
+
+    if not key:
+        return jsonify({"error": "api_key is required"}), 400
+
+    # Basic format check
+    if not key.startswith("sk-"):
+        return jsonify({"error": "Key should start with sk-"}), 400
+
+    _save_api_key(key)
+    logger.info("API key saved (redacted: %s)", _redact_key(key))
+
+    return jsonify({
+        "status": "saved",
+        "api_key_redacted": _redact_key(key),
+    }), 200
+
+
+@app.route("/api/config/test", methods=["POST"])
+def test_config() -> tuple[Response, int]:
+    """Test the currently stored API key (or one provided in the body).
+
+    Body (optional): {"api_key": "sk-ant-..."} — if omitted, tests stored key.
+    """
+    data = request.get_json(silent=True) or {}
+    key = data.get("api_key", "").strip() or _read_api_key()
+
+    if not key:
+        return jsonify({"valid": False, "message": "No API key configured"}), 200
+
+    valid, message = validate_api_key(key)
+    return jsonify({"valid": valid, "message": message}), 200
 
 
 # ---------------------------------------------------------------------------
