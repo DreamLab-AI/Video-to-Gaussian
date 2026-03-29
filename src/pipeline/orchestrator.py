@@ -665,52 +665,33 @@ class PipelineOrchestrator:
         except Exception as exc:
             logger.info("MCP not available (expected in headless Docker): %s", exc)
 
-        # Training metrics from CLI output or MCP
+        # Check for training output (CLI or MCP)
+        if self._trained_ply and self._trained_ply.exists():
+            # CLI training succeeded — use PLY as proof
+            logger.info("CLI training completed, PLY: %s (%.0f MB)",
+                        self._trained_ply, self._trained_ply.stat().st_size / 1024 / 1024)
+            return StageResult(
+                success=True, state=self._state,
+                metrics={"trained_ply": str(self._trained_ply), "method": "cli_headless"},
+                artifacts={"dataset_dir": str(dataset_dir), "trained_ply": str(self._trained_ply)},
+            )
+
+        # Try MCP wait if no CLI output
         self._training_metrics = None
         try:
             final_state = self.mcp.wait_training_complete(poll_interval=10.0)
-        except Exception as exc:
             return StageResult(
-                success=False, state=self._state,
-                error=f"Training failed: {exc}",
+                success=True, state=self._state,
+                metrics={"psnr": final_state.psnr, "ssim": final_state.ssim,
+                         "iterations": final_state.iteration, "num_gaussians": final_state.num_gaussians},
+                artifacts={"dataset_dir": str(dataset_dir)},
             )
-
-        # Collect training metrics
-        try:
-            loss_hist = self.mcp.training_get_loss_history(last_n=1000)
-        except McpError:
-            loss_hist = None
-
-        self._training_metrics = TrainingMetrics(
-            psnr=final_state.psnr,
-            ssim=final_state.ssim,
-            final_loss=final_state.loss,
-            loss_history=loss_hist.losses if loss_hist else [],
-            iterations_completed=final_state.iteration,
-            max_iterations=final_state.max_iterations,
-            num_gaussians=final_state.num_gaussians,
-        )
-
-        # Save checkpoint
-        ckpt_path = self.output_dir / "checkpoints" / "initial.resume"
-        ckpt_path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            self.mcp.save_checkpoint(str(ckpt_path))
-        except McpError as exc:
-            logger.warning("Could not save checkpoint: %s", exc)
+        except Exception as exc:
+            logger.warning("MCP wait failed: %s", exc)
 
         return StageResult(
-            success=True, state=self._state,
-            metrics={
-                "psnr": final_state.psnr,
-                "ssim": final_state.ssim,
-                "iterations": final_state.iteration,
-                "num_gaussians": final_state.num_gaussians,
-            },
-            artifacts={
-                "dataset_dir": str(dataset_dir),
-                "checkpoint": str(ckpt_path),
-            },
+            success=False, state=self._state,
+            error="No training output found (no PLY from CLI, no MCP connection)",
         )
 
     def _run_colmap_direct(self, output_dir: Path) -> None:
