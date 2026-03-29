@@ -58,6 +58,12 @@ Reconstruct 3D polygonal scenes in USD format from video, via Gaussian Splatting
 | Material assignment | `material_assigner.py` | Skeleton written | Depends on texture baking |
 | COLMAP output parsing | `colmap_parser.py` | Basic binary reader | Needs robust error handling for malformed models |
 
+### Planned
+
+| Component | Module | Description |
+|-----------|--------|-------------|
+| Audio-to-scene-graph naming | TBD (`src/pipeline/audio_namer.py`) | Extract audio track from input video using FFmpeg, transcribe with OpenAI Whisper (or whisper.cpp for local inference), run NER/keyword extraction on the transcript, and use the extracted terms to automatically name objects in the USD scene graph. For example, if the narrator says "the red chair by the window", the pipeline would match segmented objects by visual description and assign `red_chair` as the prim name instead of `object_017`. This closes the gap between human-legible scene descriptions and the anonymous object IDs that segmentation produces. Depends on: working SAM3 segmentation (for object descriptions) and USD assembly (for prim naming). |
+
 ### Known Issues
 
 1. **COLMAP sparse reconstruction is the bottleneck** -- ~20 minutes on 32 cores for 15 frames. No GPU acceleration available for the sparse BA solver. Workaround: use fewer frames or switch to incremental mapper.

@@ -1,5 +1,7 @@
 # Gaussian Toolkit Architecture
 
+> **Boundary note:** Gaussian Toolkit is our fork of [LichtFeld Studio](https://github.com/MrNeRF/LichtFeld-Studio) (MrNeRF). LichtFeld Studio is the upstream product. We add the video-to-scene pipeline, web interface, Docker deployment, and research. See [BOUNDARIES.md](../../BOUNDARIES.md) for the complete separation policy and the decision framework for where new code belongs.
+
 ## System Overview
 
 Gaussian Toolkit integrates multiple components into a unified 3D Gaussian Splatting pipeline running in a consolidated Docker container on dual RTX 6000 Ada GPUs (96GB total VRAM).
@@ -170,35 +172,27 @@ Each tool carries metadata:
 
 ## Directory Layout
 
+See [BOUNDARIES.md](../../BOUNDARIES.md) for the authoritative ownership map. Summary:
+
 ```
-gaussian-toolkit/
-├── docs/                          # This documentation
-│   ├── architecture/              # System design
-│   ├── build/                     # Build instructions
-│   ├── integration/               # MCP, skills, Docker
-│   ├── workflows/                 # Usage workflows
-│   └── troubleshooting/           # Common issues
-├── docker/                        # Docker configuration
-│   ├── Dockerfile                 # Base container
-│   ├── docker-compose.yml         # Service composition
-│   ├── entrypoint.sh              # Container entry
-│   ├── run_docker.sh              # Launch helper
-│   └── supervisord.conf           # Process manager
-├── Dockerfile.consolidated        # Consolidated Docker (all services)
-├── docker-compose.consolidated.yml # Consolidated compose
-├── scripts/
-│   ├── tools/                     # CLI wrappers (lfs-mcp, video2splat)
-│   ├── run_gallery_pipeline.py    # Full gallery pipeline
-│   ├── run_object_separation.py   # Object extraction
-│   ├── run_tsdf_mesh.py           # TSDF mesh extraction
-│   └── assemble_gallery_usd.py   # USD scene assembly
+LichtFeld-Studio/
 ├── src/
-│   ├── pipeline/                  # 21 Python pipeline modules
-│   ├── web/                       # 5 web interface files (Flask :7860)
-│   ├── mcp/                       # Built-in MCP server
-│   ├── app/                       # Application entry + GUI tools
-│   └── ...
-├── research/                      # 15 research documents
-├── external/                      # Git submodules
-└── build/                         # Build output (not committed)
+│   ├── core/              # UPSTREAM (LichtFeld) — do not modify
+│   ├── app/               # UPSTREAM
+│   ├── mcp/               # UPSTREAM
+│   ├── rendering/         # UPSTREAM
+│   ├── training/          # UPSTREAM
+│   ├── pipeline/          # OURS — 24 Python pipeline modules
+│   └── web/               # OURS — Flask web interface (:7860)
+├── research/              # OURS — 15 research documents (not product)
+├── docker/                # OURS — Docker configuration
+├── scripts/               # OURS — Utility scripts and test harnesses
+├── Dockerfile.consolidated         # OURS — Consolidated container
+├── docker-compose.consolidated.yml # OURS — Single-command deployment
+├── GAUSSIAN_TOOLKIT_README.md      # OURS — Authoritative fork README
+├── BOUNDARIES.md                   # OURS — Ownership and separation policy
+├── docs/                  # Mixed (architecture/* is ours, upstream docs exist)
+├── external/              # UPSTREAM — Git submodules
+├── README.md              # UPSTREAM — Do not overwrite
+└── build/                 # Build output (not committed)
 ```
