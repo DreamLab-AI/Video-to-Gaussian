@@ -151,11 +151,11 @@ RUN pip3 install --break-system-packages --ignore-installed \
         pillow piexif av yt-dlp huggingface_hub requests aiohttp flask \
         plyfile numpy scipy opencv-python-headless \
         segment-anything \
-    && pip3 install --break-system-packages --no-deps \
-        "antlr4-python3-runtime==4.9.3" \
     && pip3 install --break-system-packages \
+        "antlr4-python3-runtime==4.13.2" \
+    && pip3 install --break-system-packages --no-build-isolation \
         "iopath @ git+https://github.com/facebookresearch/iopath.git" \
-    && pip3 install --break-system-packages \
+    && pip3 install --break-system-packages --no-build-isolation \
         "sam2 @ git+https://github.com/facebookresearch/sam2.git"
 
 # USD requires python3.11 — isolated venv
