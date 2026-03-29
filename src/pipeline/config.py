@@ -36,7 +36,10 @@ class ReconstructConfig:
 class TrainingConfig:
     """Gaussian splatting training parameters."""
     max_iterations: int = 30000
-    strategy: str = "mcmc"
+    iterations: int = 30000
+    strategy: str = "mrnf"
+    sh_degree: int = 3
+    lichtfeld_binary: str = "/opt/gaussian-toolkit/build/LichtFeld-Studio"
     target_psnr: float = 25.0
     target_ssim: float = 0.85
     convergence_window: int = 500

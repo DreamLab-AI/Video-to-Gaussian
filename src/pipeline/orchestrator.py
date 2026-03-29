@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
 import subprocess
 import time
@@ -601,24 +602,68 @@ class PipelineOrchestrator:
 
         self._colmap_dir = dataset_dir
 
-        # Load dataset into LichtFeld via MCP
+        # Train via CLI (headless) — no MCP needed
+        model_dir = self.output_dir / "model"
+        model_dir.mkdir(parents=True, exist_ok=True)
+
+        lfs_binary = self.config.training.lichtfeld_binary
+        if not Path(lfs_binary).exists():
+            # Try common locations
+            for candidate in [
+                "/opt/gaussian-toolkit/build/LichtFeld-Studio",
+                "/usr/local/bin/lichtfeld-studio",
+                str(Path.home() / "workspace/gaussians/LichtFeld-Studio/build/LichtFeld-Studio"),
+            ]:
+                if Path(candidate).exists():
+                    lfs_binary = candidate
+                    break
+
+        if Path(lfs_binary).exists():
+            train_cmd = [
+                lfs_binary, "--headless",
+                "--data-path", str(dataset_dir),
+                "--output-path", str(model_dir),
+                "--iter", str(self.config.training.iterations),
+                "--strategy", self.config.training.strategy,
+                "--sh-degree", str(self.config.training.sh_degree),
+                "--log-level", "info",
+            ]
+            logger.info("Training via CLI: %s", " ".join(train_cmd))
+            try:
+                proc = subprocess.run(
+                    train_cmd, capture_output=True, text=True,
+                    timeout=3600,
+                    env={**os.environ, "LD_LIBRARY_PATH": f"{Path(lfs_binary).parent}:{os.environ.get('LD_LIBRARY_PATH', '')}"},
+                )
+                if proc.returncode != 0:
+                    logger.warning("Training stderr: %s", proc.stderr[-500:] if proc.stderr else "none")
+            except subprocess.TimeoutExpired:
+                return StageResult(
+                    success=False, state=self._state,
+                    error="Training timed out (3600s)",
+                )
+        else:
+            logger.warning("LichtFeld binary not found at %s, skipping training", lfs_binary)
+
+        # Find trained PLY
+        ply_files = sorted(model_dir.rglob("*.ply"))
+        if ply_files:
+            self._trained_ply = ply_files[-1]
+            logger.info("Trained model: %s", self._trained_ply)
+        else:
+            self._trained_ply = None
+            logger.warning("No PLY output from training")
+
+        # Also try MCP if server is running
         try:
             load_result = self.mcp.load_dataset(
                 path=str(dataset_dir),
-                max_iterations=self.config.training.max_iterations,
+                max_iterations=self.config.training.iterations,
                 strategy=self.config.training.strategy,
             )
-        except (McpError, McpConnectionError) as exc:
-            return StageResult(
-                success=False, state=self._state,
-                error=f"MCP load_dataset failed: {exc}",
-            )
-
-        # Start training
-        try:
             self.mcp.training_start()
-        except (McpError, McpConnectionError) as exc:
-            return StageResult(
+        except Exception as exc:
+            logger.info("MCP not available (expected in headless Docker): %s", exc)
                 success=False, state=self._state,
                 error=f"MCP training_start failed: {exc}",
             )
@@ -695,7 +740,26 @@ class PipelineOrchestrator:
             "--database_path", str(db_path),
             "--image_path", str(self._frame_dir),
             "--output_path", str(sparse_dir),
-        ], check=True, capture_output=True, timeout=600)
+            "--Mapper.multiple_models", "0",
+        ], check=True, capture_output=True, timeout=1800)
+
+        # Undistort images
+        undist_dir = output_dir / "undistorted"
+        subprocess.run([
+            colmap, "image_undistorter",
+            "--image_path", str(self._frame_dir),
+            "--input_path", str(sparse_dir / "0"),
+            "--output_path", str(undist_dir),
+            "--output_type", "COLMAP",
+        ], check=True, capture_output=True, timeout=300)
+
+        # Fix sparse/0 layout if needed (undistorter puts sparse/ flat)
+        undist_sparse = undist_dir / "sparse"
+        if undist_sparse.exists() and not (undist_sparse / "0").exists():
+            import shutil
+            (undist_sparse / "0").mkdir(exist_ok=True)
+            for f in undist_sparse.glob("*.bin"):
+                shutil.move(str(f), str(undist_sparse / "0" / f.name))
 
     def _run_quality_gate_1(self) -> StageResult:
         """Evaluate training quality. Decide whether to proceed or retry."""
