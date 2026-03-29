@@ -152,11 +152,8 @@ RUN pip3 install --break-system-packages --ignore-installed \
         plyfile numpy scipy opencv-python-headless \
         segment-anything \
     && pip3 install --break-system-packages \
-        "antlr4-python3-runtime==4.13.2" \
-    && pip3 install --break-system-packages --no-build-isolation \
-        "iopath @ git+https://github.com/facebookresearch/iopath.git" \
-    && pip3 install --break-system-packages --no-build-isolation \
-        "sam2 @ git+https://github.com/facebookresearch/sam2.git"
+        "sam-2==1.1.0" || pip3 install --break-system-packages \
+        "segment-anything-2" || echo "SAM2 pip install skipped — using ComfyUI SAM2 nodes instead"
 
 # USD requires python3.11 — isolated venv
 RUN python3.11 -m venv /opt/venv-usd && \
