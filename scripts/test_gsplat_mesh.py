@@ -70,9 +70,12 @@ def main():
     else:
         logger.info("Already under 100K faces, skipping decimation")
 
-    # ── 4. Bake UV texture from gsplat renders ──
+    # ── 4. Bake UV texture from vertex colors ──
+    # Note: Multi-view projection baking is available via TextureBaker.bake()
+    # but is slow for large meshes (pure Python loops). For production use,
+    # consider decimating further or using GPU-accelerated UV projection.
     logger.info("=" * 60)
-    logger.info("STEP 3: UV texture baking")
+    logger.info("STEP 3: UV texture baking (vertex colors)")
     texture_path = OUT_DIR / "diffuse_texture.png"
 
     t0 = time.time()
@@ -80,39 +83,15 @@ def main():
         from pipeline.texture_baker import TextureBaker, BakeConfig
 
         baker = TextureBaker(config=BakeConfig(texture_size=2048))
-
-        # Convert gsplat cameras to camera-to-world poses for baker
-        cam_poses = []
-        for viewmat, K in cameras[:len(color_images)]:
-            vm_np = viewmat.cpu().numpy()
-            cam_to_world = np.linalg.inv(vm_np)
-            cam_poses.append(cam_to_world)
-
-        color_uint8 = [
-            np.clip(img * 255, 0, 255).astype(np.uint8) for img in color_images
-        ]
-
-        textured_mesh, tex_path = baker.bake(
-            mesh,
-            output_texture_path=str(texture_path),
-            color_images=color_uint8,
-            camera_poses=cam_poses,
+        textured_mesh, tex_path = baker.bake_from_vertex_colors(
+            mesh, output_texture_path=str(texture_path),
         )
         dt_bake = time.time() - t0
-        logger.info("Texture baked: %.1fs -> %s", dt_bake, tex_path)
+        logger.info("Vertex color texture baked: %.1fs -> %s", dt_bake, tex_path)
         mesh = textured_mesh
     except Exception as e:
         dt_bake = time.time() - t0
         logger.warning("Texture baking failed (%.1fs): %s", dt_bake, e)
-        logger.info("Falling back to vertex color bake")
-        try:
-            baker = TextureBaker(config=BakeConfig(texture_size=2048))
-            mesh, tex_path = baker.bake_from_vertex_colors(
-                mesh, output_texture_path=str(texture_path),
-            )
-            logger.info("Vertex color texture baked: %s", tex_path)
-        except Exception as e2:
-            logger.warning("Vertex color bake also failed: %s", e2)
 
     # ── 5. Export OBJ + PNG ──
     logger.info("=" * 60)
