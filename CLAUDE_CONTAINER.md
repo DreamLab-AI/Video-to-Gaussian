@@ -327,3 +327,58 @@ curl -X POST http://localhost:7860/api/job/JOB_ID/stage \
 | POST | `/api/job/<id>/complete` | `{"success": true}` | Mark job done |
 | GET | `/jobs` | -- | List all jobs |
 | GET | `/status/<id>` | -- | Job detail |
+| GET | `/api/job/<id>/previews` | -- | List preview images |
+
+## IMPORTANT: Save preview images at each stage
+
+The web UI has an image carousel that displays previews. **You MUST save preview images
+during the pipeline so the user can monitor progress visually.** Save as PNG/JPG to the
+job output directory. The carousel auto-refreshes every 30 seconds.
+
+### Required previews:
+
+```bash
+JOB_DIR=/data/output/JOB_ID
+
+# After frame extraction: save a sample frame
+cp $JOB_DIR/frames/frame_00001.jpg $JOB_DIR/preview_frames.jpg
+
+# After COLMAP: render a sparse point cloud visualization (optional)
+
+# After training: render the trained scene from 4 viewpoints
+python3 -c "
+import sys; sys.path.insert(0, 'src')
+from pipeline.mesh_extractor import load_3dgs_ply, render_gsplat
+import torch, numpy as np
+from PIL import Image
+gs = load_3dgs_ply('$JOB_DIR/model/splat_30000.ply')
+# Quick render from a default viewpoint
+viewmat = torch.eye(4, device='cuda'); viewmat[2,3] = -5
+K = torch.tensor([[800,0,512],[0,800,384],[0,0,1]], dtype=torch.float32, device='cuda')
+depth, rgb, alpha = render_gsplat(gs, viewmat, K, 1024, 768)
+img = Image.fromarray((rgb * 255).clip(0,255).astype(np.uint8))
+img.save('$JOB_DIR/preview_training.jpg')
+print('Training preview saved')
+"
+
+# After mesh: render the mesh in Blender
+blender --background --factory-startup --python-expr "
+import bpy, mathutils
+bpy.ops.object.select_all(action='SELECT'); bpy.ops.object.delete()
+bpy.ops.wm.obj_import(filepath='$JOB_DIR/objects/meshes/full_scene/full_scene.obj')
+bpy.ops.object.camera_add(location=(10,-10,8))
+cam=bpy.context.active_object
+cam.rotation_euler=(mathutils.Vector((0,0,2))-cam.location).to_track_quat('-Z','Y').to_euler()
+bpy.context.scene.camera=cam
+bpy.ops.object.light_add(type='SUN',location=(5,-5,10))
+bpy.context.active_object.data.energy=2.5
+bpy.context.scene.render.engine='CYCLES'
+bpy.context.scene.cycles.device='CPU'
+bpy.context.scene.cycles.samples=32
+bpy.context.scene.render.resolution_x=1280
+bpy.context.scene.render.resolution_y=720
+bpy.context.scene.render.filepath='$JOB_DIR/preview_mesh.jpg'
+bpy.context.scene.render.image_settings.file_format='JPEG'
+bpy.ops.render.render(write_still=True)
+"
+```
