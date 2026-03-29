@@ -679,10 +679,14 @@
 
           banner.classList.remove('hidden');
 
-          if (data.api_key_configured) {
+          if (data.claude_ready) {
             needed.classList.add('hidden');
             ok.classList.remove('hidden');
-            document.getElementById('key-display').textContent = data.api_key_redacted || '';
+            if (data.api_key_configured) {
+              document.getElementById('key-display').textContent = data.api_key_redacted || '';
+            } else if (data.oauth_session_active) {
+              document.getElementById('key-display').textContent = 'OAuth subscription (provisioned via terminal)';
+            }
           } else {
             needed.classList.remove('hidden');
             ok.classList.add('hidden');

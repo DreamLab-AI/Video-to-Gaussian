@@ -356,13 +356,29 @@ def setup() -> str:
     return render_template("index.html")
 
 
+def _check_oauth_session() -> bool:
+    """Check if Claude Code has an active OAuth session (subscription auth)."""
+    try:
+        result = subprocess.run(
+            ["sudo", "-u", "ubuntu", "-E", "env", "HOME=/home/ubuntu",
+             "TERM=xterm-256color", "claude", "-p", "respond OK", "--max-turns", "1"],
+            capture_output=True, text=True, timeout=30,
+        )
+        return "OK" in result.stdout and result.returncode == 0
+    except Exception:
+        return False
+
+
 @app.route("/api/config", methods=["GET"])
 def get_config() -> tuple[Response, int]:
-    """Return current configuration (API key redacted)."""
+    """Return current configuration (API key or OAuth session)."""
     key = _read_api_key()
+    oauth = _check_oauth_session() if not key else False
     return jsonify({
         "api_key_configured": key is not None,
         "api_key_redacted": _redact_key(key) if key else None,
+        "oauth_session_active": oauth,
+        "claude_ready": (key is not None) or oauth,
     }), 200
 
 

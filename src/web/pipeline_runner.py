@@ -83,13 +83,10 @@ def _launch_claude_code(job_id: str, output_dir: str) -> bool:
     Reads the API key from the persistent volume. If no key is stored,
     returns False (the user must run Claude Code manually via the terminal).
     """
-    if not _API_KEY_PATH.exists():
-        logger.info("No API key at %s — skipping auto-launch for job %s", _API_KEY_PATH, job_id)
-        return False
-
-    api_key = _API_KEY_PATH.read_text().strip()
-    if not api_key:
-        return False
+    # Check for API key or OAuth session
+    api_key = None
+    if _API_KEY_PATH.exists():
+        api_key = _API_KEY_PATH.read_text().strip() or None
 
     prompt = (
         f"Process the video pipeline job at {output_dir}. "
@@ -99,12 +96,14 @@ def _launch_claude_code(job_id: str, output_dir: str) -> bool:
         f"and mark completion at http://localhost:7860/api/job/{job_id}/complete"
     )
 
+    env_vars = ["HOME=/home/ubuntu", "TERM=xterm-256color"]
+    if api_key:
+        env_vars.append(f"ANTHROPIC_API_KEY={api_key}")
+    # If no API key, Claude Code will use the OAuth session from /home/ubuntu/.claude/
+
     cmd = [
         "sudo", "-u", "ubuntu", "-E",
-        "env",
-        f"ANTHROPIC_API_KEY={api_key}",
-        "HOME=/home/ubuntu",
-        "TERM=xterm-256color",
+        "env", *env_vars,
         "claude",
         "--dangerously-skip-permissions",
         "-p", prompt,
