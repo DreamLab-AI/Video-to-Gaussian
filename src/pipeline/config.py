@@ -108,12 +108,12 @@ class PersonRemovalConfig:
     """Person detection and removal parameters."""
     enabled: bool = True
     method: str = "opencv"
-    comfyui_url: str = "http://192.168.2.48:8188"
+    comfyui_url: str = "http://localhost:8188"
     flux_endpoint: str = ""
     confidence: float = 0.5
     dilation_px: int = 15
-    drop_threshold: float = 0.30
-    flag_threshold: float = 0.05
+    drop_threshold: float = 0.50
+    flag_threshold: float = 0.15
     comfyui_timeout: float = 120.0
 
 
