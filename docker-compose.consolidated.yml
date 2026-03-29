@@ -1,11 +1,9 @@
-version: "3.9"
-
 services:
   gaussian-toolkit:
     build:
       context: .
       dockerfile: Dockerfile.consolidated
-    image: lichtfeld-studio:consolidated
+    image: gaussian-toolkit:latest
     container_name: gaussian-toolkit
     hostname: gaussian-toolkit
     runtime: nvidia
@@ -37,7 +35,7 @@ services:
 
     volumes:
       # Model staging — pre-populate this with downloaded models
-      - ./models-staging:/models-staging:ro
+      - /home/john/comfyui-models-staging:/models-staging:ro
       # Persistent output data
       - ./output:/opt/output
       # Persistent model cache (survives rebuilds)
