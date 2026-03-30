@@ -34,6 +34,7 @@ class MeshCleaner:
         smooth_iterations: int = 3,
         smooth_lambda: float = 0.5,
         min_component_ratio: float = 0.01,
+        min_component_faces: int = 100,
         fill_holes: bool = True,
         max_hole_edges: int = 100,
     ) -> trimesh.Trimesh:
@@ -46,6 +47,9 @@ class MeshCleaner:
             smooth_lambda: Smoothing strength per iteration (0-1).
             min_component_ratio: Remove components with fewer faces
                 than this fraction of the largest component.
+            min_component_faces: Absolute minimum face count for a
+                component to be kept. Components below this are always
+                removed regardless of the ratio threshold.
             fill_holes: Whether to attempt hole filling.
             max_hole_edges: Maximum boundary loop size to fill.
 
@@ -59,7 +63,10 @@ class MeshCleaner:
         mesh = self.remove_degenerate_faces(mesh)
 
         # Step 2: Remove small disconnected components
-        mesh = self.remove_small_components(mesh, min_component_ratio)
+        mesh = self.remove_small_components(
+            mesh, min_ratio=min_component_ratio,
+            min_faces=min_component_faces,
+        )
 
         # Step 3: Fill holes
         if fill_holes:
@@ -104,34 +111,53 @@ class MeshCleaner:
         self,
         mesh: trimesh.Trimesh,
         min_ratio: float = 0.01,
+        min_faces: int = 100,
     ) -> trimesh.Trimesh:
-        """Remove disconnected components smaller than min_ratio of the largest.
+        """Remove disconnected components that are too small.
+
+        A component is removed if it has fewer faces than EITHER:
+        - ``min_faces`` (absolute floor), or
+        - ``min_ratio * largest_component_face_count`` (relative threshold)
+
+        The effective threshold is the maximum of these two values.
 
         Args:
             mesh: Input mesh.
             min_ratio: Minimum fraction of the largest component's face count.
+            min_faces: Absolute minimum number of faces a component must have.
 
         Returns:
-            Mesh with only large components retained.
+            Mesh with only significant components retained.
         """
         if len(mesh.faces) == 0:
             return mesh
 
         components = mesh.split(only_watertight=False)
-        if len(components) <= 1:
+        n_total = len(components)
+        if n_total <= 1:
             return mesh
 
         # Sort by face count descending
         components.sort(key=lambda m: len(m.faces), reverse=True)
         largest_count = len(components[0].faces)
-        threshold = int(largest_count * min_ratio)
+        ratio_threshold = int(largest_count * min_ratio)
+        threshold = max(ratio_threshold, min_faces)
 
         kept = [c for c in components if len(c.faces) >= threshold]
-        removed = len(components) - len(kept)
+        removed = n_total - len(kept)
+        removed_faces = sum(len(c.faces) for c in components if len(c.faces) < threshold)
 
-        if removed > 0:
-            logger.info("Removed %d small components (threshold=%d faces)",
-                         removed, threshold)
+        logger.info(
+            "Component filter: %d total components, kept %d, "
+            "removed %d (threshold=%d faces, ratio_threshold=%d, "
+            "abs_min=%d, removed_faces=%d)",
+            n_total, len(kept), removed, threshold,
+            ratio_threshold, min_faces, removed_faces,
+        )
+
+        if len(kept) == 0:
+            logger.warning("All components below threshold; keeping largest")
+            return components[0]
 
         if len(kept) == 1:
             return kept[0]

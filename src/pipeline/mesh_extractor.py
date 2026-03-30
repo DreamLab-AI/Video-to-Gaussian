@@ -148,6 +148,7 @@ def render_gsplat(
         )
 
     rgb = renders[0, :, :, :3].cpu().numpy()
+    rgb = np.clip(rgb, 0.0, 1.0)  # Clamp SH color to valid range
     depth = renders[0, :, :, 3].cpu().numpy()
     alpha = alphas[0, :, :, 0].cpu().numpy()
 
@@ -454,7 +455,8 @@ class TSDFConfig:
     camera_fov_deg: float = 60.0
     target_faces: int = 50000
     smooth_iterations: int = 3
-    min_component_ratio: float = 0.01
+    min_component_ratio: float = 0.005
+    min_component_faces: int = 100
     mcp_endpoint: str = "http://127.0.0.1:45677/mcp"
 
 
@@ -536,8 +538,9 @@ class TSDFVolume:
         x_coords, y_coords, z_coords = self._voxel_centers()
 
         color_f = color_image.astype(np.float32)
-        if color_f.max() > 1.0:
+        if color_f.max() > 1.5:  # Likely uint8 [0,255]
             color_f /= 255.0
+        color_f = np.clip(color_f, 0.0, 1.0)  # Ensure valid range
 
         # Process in slabs along x to manage memory
         slab_size = max(1, min(self.nx, 64))
@@ -950,6 +953,7 @@ class MeshExtractor:
             target_faces=target,
             smooth_iterations=self.config.smooth_iterations,
             min_component_ratio=self.config.min_component_ratio,
+            min_component_faces=self.config.min_component_faces,
         )
 
         total_time = time.time() - t_start
@@ -999,6 +1003,7 @@ class MeshExtractor:
             target_faces=cfg.target_faces,
             smooth_iterations=cfg.smooth_iterations,
             min_component_ratio=cfg.min_component_ratio,
+            min_component_faces=cfg.min_component_faces,
         )
         return mesh
 
@@ -1032,6 +1037,7 @@ class MeshExtractor:
             target_faces=cfg.target_faces,
             smooth_iterations=cfg.smooth_iterations,
             min_component_ratio=cfg.min_component_ratio,
+            min_component_faces=cfg.min_component_faces,
         )
         return mesh
 

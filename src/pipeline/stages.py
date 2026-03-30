@@ -1098,6 +1098,8 @@ class PipelineStages:
         meshes_dir.mkdir(parents=True, exist_ok=True)
         results: list[dict[str, Any]] = []
 
+        from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
+
         for ply_path in object_plys:
             ply = Path(ply_path)
             if not ply.exists():
@@ -1110,7 +1112,22 @@ class PipelineStages:
             mesh_glb = obj_dir / f"{label}.glb"
             mesh_obj = obj_dir / f"{label}.obj"
 
-            mesh_result = self._mesh_single(label, str(ply), obj_dir, mesh_obj, mesh_glb)
+            # Run each object mesh with a 600s (10 min) timeout to prevent
+            # the stage from hanging in subprocess environments where
+            # SIGALRM doesn't propagate.
+            try:
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(
+                        self._mesh_single, label, str(ply), obj_dir, mesh_obj, mesh_glb,
+                    )
+                    mesh_result = future.result(timeout=600)
+            except FuturesTimeout:
+                logger.warning("Meshing timed out (600s) for '%s', skipping", label)
+                mesh_result = None
+            except Exception as exc:
+                logger.warning("Meshing failed for '%s': %s", label, exc)
+                mesh_result = None
+
             if mesh_result is not None:
                 results.append(mesh_result)
 
@@ -1203,29 +1220,24 @@ class PipelineStages:
                 # Texture baking adds UV atlas + diffuse map (higher quality).
                 texture_path = obj_dir / f"{label}_diffuse.png"
                 try:
-                    import signal
-
-                    def _bake_timeout(signum, frame):
-                        raise TimeoutError("Texture baking exceeded 120s limit")
-
+                    from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
                     from pipeline.texture_baker import TextureBaker, BakeConfig
                     baker = TextureBaker(config=BakeConfig(texture_size=2048))
-                    old_handler = signal.signal(signal.SIGALRM, _bake_timeout)
-                    signal.alarm(120)  # 2 minute timeout
-                    try:
-                        textured_mesh, tex_path = baker.bake_from_vertex_colors(
+
+                    with ThreadPoolExecutor(max_workers=1) as executor:
+                        future = executor.submit(
+                            baker.bake_from_vertex_colors,
                             mesh,
                             output_texture_path=str(texture_path),
                         )
-                        signal.alarm(0)
-                        textured_mesh.export(str(mesh_glb_path))
-                        textured_mesh.export(str(mesh_obj_path))
-                        logger.info("Baked texture for '%s': %s", label, tex_path)
-                    except TimeoutError:
-                        signal.alarm(0)
-                        logger.warning("Texture baking timed out for '%s', keeping vertex-colored mesh", label)
-                    finally:
-                        signal.signal(signal.SIGALRM, old_handler)
+                        try:
+                            textured_mesh, tex_path = future.result(timeout=120)
+                            textured_mesh.export(str(mesh_glb_path))
+                            textured_mesh.export(str(mesh_obj_path))
+                            logger.info("Baked texture for '%s': %s", label, tex_path)
+                        except FuturesTimeout:
+                            logger.warning("Texture baking timed out for '%s', keeping vertex-colored mesh", label)
+                            future.cancel()
                 except Exception as tex_exc:
                     logger.warning("Texture baking failed for '%s': %s (vertex-colored mesh retained)", label, tex_exc)
 
