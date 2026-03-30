@@ -270,23 +270,86 @@ def stream(job_id: str) -> Response:
 
 @app.route("/download/<job_id>")
 def download(job_id: str) -> Response:
-    """Download the result archive for a completed job."""
+    """Download a zip archive of the job output."""
     job = get_job(job_id)
     if job is None:
         abort(404)
 
-    if job.state != JobState.COMPLETED:
-        abort(400, description="Job not completed")
+    output_dir = Path(job.output_dir) if hasattr(job, "output_dir") and job.output_dir else None
 
-    if not job.result_archive or not Path(job.result_archive).exists():
-        abort(404, description="Result archive not found")
+    # Fall back to pre-built archive if output_dir is unavailable
+    if output_dir is None or not output_dir.exists():
+        if job.result_archive and Path(job.result_archive).exists():
+            return send_file(
+                job.result_archive,
+                mimetype="application/zip",
+                as_attachment=True,
+                download_name=f"{job.filename.rsplit('.', 1)[0]}_result.zip",
+            )
+        abort(404, description="Output directory not found")
 
+    # Create zip on the fly - include meshes, USD, previews, PLY (skip frames)
+    import io
+    import zipfile
+
+    zip_buffer = io.BytesIO()
+    base_name = job.filename.rsplit(".", 1)[0] if job.filename else job.job_id
+
+    include_dirs = {"objects", "usd", "previews", "model"}
+    include_extensions = {
+        ".glb", ".obj", ".ply", ".usda", ".usdc", ".usdz",
+        ".jpg", ".png", ".json", ".mtl",
+    }
+
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        for path in output_dir.rglob("*"):
+            if not path.is_file():
+                continue
+            rel = path.relative_to(output_dir)
+            # Skip frames directory (too large), skip input
+            top_dir = rel.parts[0] if rel.parts else ""
+            if top_dir in ("frames", "frames_selected", "input", "colmap"):
+                continue
+            if path.suffix.lower() in include_extensions or top_dir in include_dirs:
+                zf.write(path, arcname=str(rel))
+
+    zip_buffer.seek(0)
     return send_file(
-        job.result_archive,
+        zip_buffer,
         mimetype="application/zip",
         as_attachment=True,
-        download_name=f"{job.filename.rsplit('.', 1)[0]}_result.zip",
+        download_name=f"{base_name}_scene.zip",
     )
+
+
+@app.route("/viewer/<job_id>")
+def viewer(job_id: str) -> str:
+    """Serve the 3D viewer page for a completed job."""
+    job = get_job(job_id)
+    if job is None:
+        abort(404)
+    return render_template("viewer.html", job_id=job_id, filename=job.filename or job_id)
+
+
+@app.route("/mesh/<job_id>")
+def serve_mesh(job_id: str) -> Response:
+    """Serve the GLB mesh for the 3D viewer."""
+    job = get_job(job_id)
+    if job is None:
+        abort(404)
+
+    output_dir = Path(job.output_dir) if hasattr(job, "output_dir") and job.output_dir else None
+    if output_dir is None or not output_dir.exists():
+        abort(404, description="Output directory not found")
+
+    # Find GLB files
+    glb_files = list(output_dir.glob("objects/meshes/**/*.glb"))
+    if not glb_files:
+        glb_files = list(output_dir.glob("**/*.glb"))
+    if not glb_files:
+        abort(404, description="No GLB mesh found")
+
+    return send_file(glb_files[0], mimetype="model/gltf-binary")
 
 
 @app.route("/preview/<job_id>/<stage>")

@@ -212,8 +212,13 @@
               <p id="detail-meta" class="text-sm text-lf-muted mt-0.5"></p>
             </div>
             <div class="flex items-center gap-2">
-              <button id="detail-download" onclick="downloadJob()" class="hidden px-3 py-1.5 bg-lf-accent text-white text-sm rounded-lg hover:bg-lf-accent-light transition">
-                Download Result
+              <a id="detail-view3d" href="#" class="hidden px-3 py-1.5 bg-lf-success text-white text-sm rounded-lg hover:bg-lf-success/80 transition inline-flex items-center gap-1">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 10l-2 1m0 0l-2-1m2 1v2.5M20 7l-8 4.5M20 7v10l-8 4.5M20 7L12 2.5 4 7m8 4.5L4 7m8 4.5V17m8-9.5v10l-8 4.5M4 7v10l8 4.5"/></svg>
+                View 3D
+              </a>
+              <button id="detail-download" onclick="downloadJob()" class="hidden px-3 py-1.5 bg-lf-accent text-white text-sm rounded-lg hover:bg-lf-accent-light transition inline-flex items-center gap-1">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3M3 17v3a2 2 0 002 2h14a2 2 0 002-2v-3"/></svg>
+                Download ZIP
               </button>
               <button id="detail-cancel" onclick="cancelJob()" class="hidden px-3 py-1.5 bg-lf-error/20 text-lf-error text-sm rounded-lg hover:bg-lf-error/30 transition">
                 Cancel
@@ -492,6 +497,8 @@
       // Buttons
       const isActive = !['completed', 'failed', 'cancelled'].includes(job.state);
       document.getElementById('detail-cancel').classList.toggle('hidden', !isActive);
+      document.getElementById('detail-view3d').classList.toggle('hidden', job.state !== 'completed');
+      document.getElementById('detail-view3d').href = `/viewer/${job.job_id}`;
       document.getElementById('detail-download').classList.toggle('hidden', job.state !== 'completed');
 
       // Stage pipeline
@@ -583,6 +590,8 @@
             // Update buttons
             const isActive = !['completed', 'failed', 'cancelled'].includes(data.state);
             document.getElementById('detail-cancel').classList.toggle('hidden', !isActive);
+            document.getElementById('detail-view3d').classList.toggle('hidden', data.state !== 'completed');
+            if (currentJobId) document.getElementById('detail-view3d').href = `/viewer/${currentJobId}`;
             document.getElementById('detail-download').classList.toggle('hidden', data.state !== 'completed');
             refreshJobs();
             break;
