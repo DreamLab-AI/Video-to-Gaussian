@@ -8,6 +8,9 @@ services:
     hostname: gaussian-toolkit
     runtime: nvidia
 
+    env_file:
+      - .env
+
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics

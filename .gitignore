@@ -55,3 +55,4 @@ __pycache__/
 test-data/
 research/gap-analysis-local/
 !docs/renders/*.jpg
+.env
