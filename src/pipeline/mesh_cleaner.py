@@ -227,22 +227,34 @@ class MeshCleaner:
         mesh: trimesh.Trimesh,
         target_faces: int,
     ) -> trimesh.Trimesh:
-        """Decimate mesh to target face count.
+        """Decimate mesh to target face count, preserving vertex colors.
 
-        Uses quadric error metrics via trimesh's simplify_quadric_decimation
-        if available, otherwise falls back to vertex clustering.
+        Uses quadric error metrics via fast_simplification if available,
+        otherwise falls back to vertex clustering. Both paths transfer
+        vertex colors from the original mesh via nearest-vertex lookup.
 
         Args:
             mesh: Input mesh.
             target_faces: Desired number of faces.
 
         Returns:
-            Decimated mesh.
+            Decimated mesh with vertex colors preserved.
         """
         if len(mesh.faces) <= target_faces:
             return mesh
 
         logger.info("Decimating from %d to %d faces", len(mesh.faces), target_faces)
+
+        # Capture vertex colors before decimation
+        has_colors = (
+            mesh.visual is not None
+            and hasattr(mesh.visual, "vertex_colors")
+            and mesh.visual.vertex_colors is not None
+            and len(mesh.visual.vertex_colors) == len(mesh.vertices)
+        )
+        original_colors = None
+        if has_colors:
+            original_colors = np.array(mesh.visual.vertex_colors)
 
         # Try fast_simplification directly with target_reduction
         try:
@@ -257,12 +269,21 @@ class MeshCleaner:
             decimated = trimesh.Trimesh(vertices=verts_out, faces=faces_out, process=True)
             if len(decimated.faces) > 0:
                 logger.info("Quadric decimation result: %d faces", len(decimated.faces))
+                if original_colors is not None:
+                    decimated = self._transfer_vertex_colors(
+                        mesh.vertices, original_colors, decimated,
+                    )
                 return decimated
         except Exception as e:
             logger.debug("fast_simplification failed: %s", e)
 
         # Fallback: vertex clustering decimation
-        return self._vertex_clustering_decimate(mesh, target_faces)
+        decimated = self._vertex_clustering_decimate(mesh, target_faces)
+        if original_colors is not None:
+            decimated = self._transfer_vertex_colors(
+                mesh.vertices, original_colors, decimated,
+            )
+        return decimated
 
     def _vertex_clustering_decimate(
         self,
@@ -310,6 +331,40 @@ class MeshCleaner:
         logger.info("Vertex clustering decimation: %d -> %d faces", current_faces, len(result.faces))
         return result
 
+    @staticmethod
+    def _transfer_vertex_colors(
+        src_vertices: np.ndarray,
+        src_colors: np.ndarray,
+        dst_mesh: trimesh.Trimesh,
+    ) -> trimesh.Trimesh:
+        """Transfer vertex colors from source vertices to destination mesh.
+
+        Uses nearest-neighbor lookup (KDTree) to map colors from the
+        original vertex positions to the decimated/repaired vertex positions.
+
+        Args:
+            src_vertices: Original vertex positions (N, 3).
+            src_colors: Original vertex colors (N, 3|4) uint8.
+            dst_mesh: Target mesh to receive colors.
+
+        Returns:
+            dst_mesh with vertex_colors applied.
+        """
+        from scipy.spatial import cKDTree
+
+        tree = cKDTree(src_vertices)
+        _, indices = tree.query(dst_mesh.vertices, k=1)
+        transferred = src_colors[indices]
+
+        # Ensure RGBA
+        if transferred.ndim == 2 and transferred.shape[1] == 3:
+            alpha = np.full((len(transferred), 1), 255, dtype=np.uint8)
+            transferred = np.hstack([transferred, alpha])
+
+        dst_mesh.visual.vertex_colors = transferred
+        logger.debug("Transferred vertex colors to %d vertices", len(dst_mesh.vertices))
+        return dst_mesh
+
     def fill_holes(
         self,
         mesh: trimesh.Trimesh,
@@ -328,6 +383,17 @@ class MeshCleaner:
         """
         try:
             import pymeshfix
+
+            # Capture vertex colors before repair (pymeshfix drops them)
+            has_colors = (
+                mesh.visual is not None
+                and hasattr(mesh.visual, "vertex_colors")
+                and mesh.visual.vertex_colors is not None
+                and len(mesh.visual.vertex_colors) == len(mesh.vertices)
+            )
+            original_verts = mesh.vertices.copy() if has_colors else None
+            original_colors = np.array(mesh.visual.vertex_colors) if has_colors else None
+
             meshfix = pymeshfix.MeshFix(mesh.vertices, mesh.faces)
             meshfix.repair(verbose=False)
             repaired = trimesh.Trimesh(
@@ -335,6 +401,13 @@ class MeshCleaner:
             )
             logger.info("pymeshfix repair: %d -> %d faces",
                          len(mesh.faces), len(repaired.faces))
+
+            # Transfer vertex colors to repaired mesh
+            if original_colors is not None and len(repaired.vertices) > 0:
+                repaired = self._transfer_vertex_colors(
+                    original_verts, original_colors, repaired,
+                )
+
             return repaired
         except ImportError:
             logger.debug("pymeshfix not available, using trimesh fill_holes")

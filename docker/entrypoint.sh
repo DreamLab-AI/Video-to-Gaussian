@@ -50,6 +50,10 @@ echo "VNC on port 5901"
 # Ensure data directories exist
 mkdir -p /data/output /data/input
 
+# Ensure HF cache is writable by ubuntu user (for SAM3 model download)
+mkdir -p /opt/hf-cache
+chown -R ubuntu:ubuntu /opt/hf-cache 2>/dev/null || true
+
 echo "Services starting via supervisord..."
 
 # Start supervisord

@@ -14,6 +14,7 @@ services:
       - CUDA_HOME=/usr/local/cuda
       - DISPLAY=:1
       - HF_TOKEN=${HF_TOKEN}
+      - HF_HOME=/opt/hf-cache
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - SAM3_BPE_PATH=/opt/sam3-repo/sam3/assets/bpe_simple_vocab_16e6.txt.gz
 
@@ -47,8 +48,8 @@ services:
       - /opt/cuda/lib64:/opt/host-cuda-libs:ro
       # Persistent model cache (survives rebuilds)
       - models-data:/opt/models
-      # HuggingFace cache
-      - hf-cache:/root/.cache/huggingface
+      # HuggingFace cache (shared path via HF_HOME env var)
+      - hf-cache:/opt/hf-cache
       # Claude Code OAuth session (survives container recreation)
       - claude-session:/home/ubuntu/.claude
       # Live pipeline source (override baked-in code for dev iteration)

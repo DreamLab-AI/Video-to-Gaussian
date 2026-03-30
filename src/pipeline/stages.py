@@ -1213,20 +1213,47 @@ class PipelineStages:
                 mesh.export(str(mesh_glb_path))
                 mesh.export(str(mesh_obj_path))
                 vc = len(mesh.vertices)
-                logger.info("gsplat mesh for '%s': %d verts", label, vc)
+                fc = len(mesh.faces)
+                logger.info("gsplat mesh for '%s': %d verts, %d faces", label, vc, fc)
 
-                # Bake texture from vertex colors (TSDF already fuses color)
-                # The vertex-colored GLB is already saved above as fallback.
-                # Skip texture baking for now — xatlas + CPU rasterization takes 30+ min
-                # and Python threads/futures can't be interrupted. The vertex-colored
-                # GLB is already exported above. Texture baking will be re-enabled
-                # when GPU rasterization (nvdiffrast) is available.
-                logger.info("Skipping texture bake for '%s' (vertex-colored mesh exported)", label)
-
-                return {
+                result_info = {
                     "label": label, "mesh": str(mesh_glb_path), "mesh_obj": str(mesh_obj_path),
                     "ply": ply_path, "vertex_count": vc, "method": "gsplat",
                 }
+
+                # Bake UV texture only for small meshes where xatlas finishes
+                # quickly (<60s). For larger meshes, rely on vertex colors in
+                # the already-exported GLB.
+                _TEXTURE_BAKE_FACE_LIMIT = 30_000
+                if fc <= _TEXTURE_BAKE_FACE_LIMIT:
+                    try:
+                        from pipeline.texture_baker import TextureBaker, BakeConfig
+                        safe_name = label.replace(" ", "_").replace("/", "_")[:50]
+                        tex_dir = self.job_dir / "objects" / "meshes" / safe_name
+                        tex_dir.mkdir(parents=True, exist_ok=True)
+                        tex_path = tex_dir / f"{safe_name}_diffuse.png"
+                        tex_obj_path = tex_dir / f"{safe_name}_textured.obj"
+
+                        bake_cfg = BakeConfig(mcp_endpoint=self.config.mcp_endpoint)
+                        baker = TextureBaker(config=bake_cfg)
+                        textured_mesh, baked_tex = baker.bake_from_vertex_colors(
+                            mesh, output_texture_path=tex_path,
+                        )
+                        textured_mesh.export(str(tex_obj_path))
+                        result_info["textured_mesh"] = str(tex_obj_path)
+                        result_info["texture"] = str(baked_tex)
+                        logger.info("Baked texture for '%s' (%d faces) -> %s",
+                                    label, fc, baked_tex)
+                    except Exception as tex_exc:
+                        logger.warning("Texture bake failed for '%s' (%d faces), "
+                                       "keeping vertex-colored mesh: %s",
+                                       label, fc, tex_exc)
+                else:
+                    logger.info("Skipping texture bake for '%s' (%d faces > %d limit), "
+                                "vertex-colored GLB exported",
+                                label, fc, _TEXTURE_BAKE_FACE_LIMIT)
+
+                return result_info
         except Exception as exc:
             logger.warning("gsplat meshing failed for '%s': %s", label, exc)
 
@@ -1470,6 +1497,9 @@ class PipelineStages:
             meshes = [r for r in objects if Path(r.get("mesh", "")).exists()]
             _write_minimal_usda(usd_path, meshes)
 
+        # ----- Blender-based assembly: import GLB, clean, materials, USD + previews -----
+        blender_result = self._run_blender_assembler(usd_path)
+
         usd_size = usd_path.stat().st_size if usd_path.exists() else 0
 
         return StageResult(
@@ -1478,12 +1508,107 @@ class PipelineStages:
                 "mesh_count": len(objects),
                 "usd_size_bytes": usd_size,
                 "used_standalone_assembler": assembled,
+                "blender_assembled": blender_result.get("success", False),
+                "blender_components_removed": blender_result.get("components_removed", 0),
+                "preview_count": len(blender_result.get("renders", [])),
             },
             artifacts={
                 "usd_path": str(usd_path),
                 "final_ply": str(final_ply) if final_ply.exists() else "",
+                "previews_dir": str(self.job_dir / "previews"),
+                "blender_renders": json.dumps(blender_result.get("renders", [])),
             },
         )
+
+    # ------------------------------------------------------------------
+    # Blender assembler helper
+    # ------------------------------------------------------------------
+
+    def _run_blender_assembler(self, usd_path: Path) -> dict:
+        """Run the Blender-based scene assembler for GLB cleaning, materials, and previews.
+
+        Locates the full_scene.glb, invokes Blender headlessly with the
+        blender_assembler.py script, and parses JSON output.
+
+        Returns the parsed JSON result dict or an error dict on failure.
+        """
+        # Locate the GLB input
+        glb_candidates = [
+            self.job_dir / "objects" / "meshes" / "full_scene" / "full_scene.glb",
+            *(self.job_dir.rglob("objects/meshes/**/*.glb")),
+        ]
+        glb_path = None
+        for candidate in glb_candidates:
+            if isinstance(candidate, Path) and candidate.exists():
+                glb_path = candidate
+                break
+
+        if glb_path is None:
+            logger.info("No GLB mesh found for Blender assembler — skipping")
+            return {"success": False, "error": "No GLB mesh found", "renders": []}
+
+        # Locate the Blender assembler script
+        script_path = Path(__file__).resolve().parent / "blender_assembler.py"
+        if not script_path.exists():
+            logger.warning("Blender assembler script not found at %s", script_path)
+            return {"success": False, "error": "Blender assembler script not found", "renders": []}
+
+        # Find Blender binary
+        blender_bin = None
+        for candidate_bin in ("/usr/local/bin/blender", "blender"):
+            if candidate_bin == "blender" or Path(candidate_bin).exists():
+                blender_bin = candidate_bin
+                break
+
+        if blender_bin is None:
+            logger.warning("Blender binary not found — skipping Blender assembly")
+            return {"success": False, "error": "Blender not found", "renders": []}
+
+        previews_dir = self.job_dir / "previews"
+        previews_dir.mkdir(parents=True, exist_ok=True)
+
+        colmap_dir = self.job_dir / "colmap"
+        cmd = [
+            blender_bin, "--background", "--python", str(script_path), "--",
+            "--input", str(glb_path),
+            "--output-usd", str(usd_path),
+            "--output-renders", str(previews_dir),
+            "--render-size", "1920x1080",
+        ]
+        if colmap_dir.exists():
+            cmd.extend(["--colmap-dir", str(colmap_dir)])
+
+        try:
+            proc = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=600,
+            )
+            if proc.returncode == 0:
+                # Parse the JSON from stdout (last line)
+                stdout_lines = proc.stdout.strip().splitlines()
+                for line in reversed(stdout_lines):
+                    line = line.strip()
+                    if line.startswith("{"):
+                        blender_result = json.loads(line)
+                        logger.info(
+                            "Blender assembler succeeded: %d components removed, %d renders",
+                            blender_result.get("components_removed", 0),
+                            len(blender_result.get("renders", [])),
+                        )
+                        return blender_result
+                logger.warning("Blender assembler produced no JSON output")
+                return {"success": False, "error": "No JSON in stdout", "renders": []}
+            else:
+                logger.warning(
+                    "Blender assembler failed (rc=%d):\nstdout: %s\nstderr: %s",
+                    proc.returncode, proc.stdout[:500], proc.stderr[:500],
+                )
+                return {"success": False, "error": f"Exit code {proc.returncode}", "renders": []}
+        except subprocess.TimeoutExpired:
+            logger.warning("Blender assembler timed out after 600s")
+            return {"success": False, "error": "Timeout", "renders": []}
+        except OSError as exc:
+            logger.warning("Blender assembler OS error: %s", exc)
+            return {"success": False, "error": str(exc), "renders": []}
 
     # ------------------------------------------------------------------
     # Stage 11: Validate
