@@ -1177,12 +1177,20 @@ class PipelineStages:
                 ))
                 previews_dir = self.job_dir / "previews"
                 previews_dir.mkdir(parents=True, exist_ok=True)
+                # Full-scene uses COLMAP cameras (better depth coverage for interiors).
+                # Isolated objects from Hunyuan MV use orbit cameras.
+                colmap_dir = None
+                if label == "full_scene":
+                    colmap_candidate = str(self.job_dir / "colmap")
+                    if Path(colmap_candidate).exists():
+                        colmap_dir = colmap_candidate
                 mesh, color_images, cameras = extractor.extract_from_gsplat(
                     ply_path,
                     num_views=64,
                     render_size=1024,
                     target_faces=self.config.mesh.max_vertices // 2,
                     preview_dir=previews_dir,
+                    colmap_dir=colmap_dir,
                 )
                 # gsplat returns mesh in world coordinates already, no rescale needed
                 mesh.export(str(mesh_glb_path))

@@ -14,13 +14,13 @@ from typing import Any
 @dataclass
 class IngestConfig:
     """Frame extraction parameters."""
-    fps: float = 4.0
+    fps: float = 2.0  # 2fps for walkthroughs (SplatReady recommends 1.0)
     max_image_size: int = 2000
     min_frames: int = 20
     max_frames: int = 500
     blur_threshold: float = 100.0
     exposure_range: tuple[float, float] = (0.1, 0.9)
-    target_frames: int = 80
+    target_frames: int = 120  # more frames = better COLMAP coverage
 
 
 @dataclass
@@ -30,7 +30,9 @@ class ReconstructConfig:
     colmap_exe: str = "/usr/local/bin/colmap"
     use_fisheye: bool = False
     min_scale: float = 0.5
-    matcher: str = "sequential"
+    matcher: str = "exhaustive"  # exhaustive for video (not sequential)
+    single_camera: bool = True  # all frames share one camera model
+    undistort: bool = True  # run image_undistorter before training
 
 
 @dataclass

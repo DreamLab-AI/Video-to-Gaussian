@@ -241,6 +241,185 @@ def generate_orbit_cameras_gsplat(
 
 
 # ---------------------------------------------------------------------------
+# COLMAP camera loading — for TSDF from training viewpoints
+# ---------------------------------------------------------------------------
+
+def load_colmap_cameras(
+    colmap_dir: str,
+    render_size: int = 1024,
+) -> list[tuple['torch.Tensor', 'torch.Tensor']]:
+    """Load COLMAP camera poses as gsplat-compatible (viewmat, K) pairs.
+
+    Uses the undistorted COLMAP model to get camera intrinsics and extrinsics.
+    Returns cameras suitable for render_gsplat() and TSDF integration.
+
+    Args:
+        colmap_dir: Path to COLMAP output (containing sparse/0/ or undistorted/sparse/0/).
+        render_size: Render resolution (cameras are rescaled to this).
+
+    Returns:
+        List of (viewmat_4x4, K_3x3) tensor pairs on CUDA.
+    """
+    import torch
+    from pathlib import Path
+
+    colmap_path = Path(colmap_dir)
+
+    # Find the sparse model — try undistorted first, then sparse/0
+    for candidate in [
+        colmap_path / "undistorted" / "sparse" / "0",
+        colmap_path / "sparse" / "0",
+        colmap_path / "sparse",
+        colmap_path,
+    ]:
+        if (candidate / "images.bin").exists() or (candidate / "images.txt").exists():
+            model_dir = candidate
+            break
+    else:
+        logger.warning("No COLMAP model found in %s, falling back to orbit cameras", colmap_dir)
+        return []
+
+    # Read cameras (intrinsics)
+    cameras_file = model_dir / "cameras.bin"
+    cameras_txt = model_dir / "cameras.txt"
+
+    fx, fy, cx, cy = None, None, None, None
+    img_w, img_h = render_size, render_size
+
+    if cameras_txt.exists():
+        with open(cameras_txt) as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith("#") or not line:
+                    continue
+                parts = line.split()
+                if len(parts) >= 5:
+                    model = parts[1]
+                    img_w, img_h = int(parts[2]), int(parts[3])
+                    params = [float(p) for p in parts[4:]]
+                    if model in ("PINHOLE", "SIMPLE_PINHOLE"):
+                        fx = params[0]
+                        fy = params[1] if len(params) > 1 and model == "PINHOLE" else params[0]
+                        cx = params[-2] if model == "PINHOLE" else img_w / 2
+                        cy = params[-1] if model == "PINHOLE" else img_h / 2
+                    elif model in ("SIMPLE_RADIAL", "RADIAL", "OPENCV"):
+                        fx = params[0]
+                        fy = params[1] if model == "OPENCV" else params[0]
+                        cx = params[1] if model != "OPENCV" else params[2]
+                        cy = params[2] if model != "OPENCV" else params[3]
+                    break
+    elif cameras_file.exists():
+        import struct
+        with open(cameras_file, "rb") as f:
+            num_cameras = struct.unpack("<Q", f.read(8))[0]
+            if num_cameras > 0:
+                cam_id = struct.unpack("<i", f.read(4))[0]
+                model_id = struct.unpack("<i", f.read(4))[0]
+                img_w = struct.unpack("<Q", f.read(8))[0]
+                img_h = struct.unpack("<Q", f.read(8))[0]
+                # Model 0=SIMPLE_PINHOLE(3), 1=PINHOLE(4), 2=SIMPLE_RADIAL(4), etc.
+                n_params = {0: 3, 1: 4, 2: 4, 3: 5, 4: 8}.get(model_id, 4)
+                params = struct.unpack(f"<{n_params}d", f.read(n_params * 8))
+                fx = params[0]
+                fy = params[1] if n_params >= 4 and model_id in (1, 4) else params[0]
+                cx = params[-2] if n_params >= 3 else img_w / 2
+                cy = params[-1] if n_params >= 3 else img_h / 2
+
+    if fx is None:
+        logger.warning("Could not parse COLMAP cameras, falling back to orbit cameras")
+        return []
+
+    # Scale to render_size
+    scale_x = render_size / img_w
+    scale_y = render_size / img_h
+    scale = min(scale_x, scale_y)
+    fx_s, fy_s = fx * scale, fy * scale
+    cx_s, cy_s = cx * scale, cy * scale
+
+    K = torch.tensor([
+        [fx_s, 0.0, cx_s],
+        [0.0, fy_s, cy_s],
+        [0.0, 0.0, 1.0],
+    ], dtype=torch.float32, device='cuda')
+
+    # Read images (extrinsics)
+    images_txt = model_dir / "images.txt"
+    images_bin = model_dir / "images.bin"
+    cameras = []
+
+    if images_txt.exists():
+        with open(images_txt) as f:
+            lines = [l.strip() for l in f if l.strip() and not l.startswith("#")]
+        # images.txt has 2 lines per image: extrinsics then 2D points
+        for i in range(0, len(lines), 2):
+            parts = lines[i].split()
+            if len(parts) < 8:
+                continue
+            qw, qx, qy, qz = [float(parts[j]) for j in range(1, 5)]
+            tx, ty, tz = [float(parts[j]) for j in range(5, 8)]
+
+            # COLMAP quaternion to rotation matrix (qw, qx, qy, qz)
+            R = _quat_to_rotmat(qw, qx, qy, qz)
+            t = np.array([tx, ty, tz])
+
+            # COLMAP stores world-to-camera: [R | t]
+            viewmat = np.eye(4, dtype=np.float32)
+            viewmat[:3, :3] = R
+            viewmat[:3, 3] = t
+            cameras.append((
+                torch.tensor(viewmat, dtype=torch.float32, device='cuda'),
+                K,
+            ))
+    elif images_bin.exists():
+        import struct
+        with open(images_bin, "rb") as f:
+            num_images = struct.unpack("<Q", f.read(8))[0]
+            for _ in range(num_images):
+                img_id = struct.unpack("<i", f.read(4))[0]
+                qw, qx, qy, qz = struct.unpack("<4d", f.read(32))
+                tx, ty, tz = struct.unpack("<3d", f.read(24))
+                cam_id = struct.unpack("<i", f.read(4))[0]
+                # Read image name (null-terminated)
+                name = b""
+                while True:
+                    c = f.read(1)
+                    if c == b"\x00":
+                        break
+                    name += c
+                # Read 2D points
+                n_pts = struct.unpack("<Q", f.read(8))[0]
+                f.read(n_pts * 24)  # skip point2D data
+
+                R = _quat_to_rotmat(qw, qx, qy, qz)
+                t = np.array([tx, ty, tz], dtype=np.float32)
+                viewmat = np.eye(4, dtype=np.float32)
+                viewmat[:3, :3] = R
+                viewmat[:3, 3] = t
+                cameras.append((
+                    torch.tensor(viewmat, dtype=torch.float32, device='cuda'),
+                    K,
+                ))
+
+    logger.info("Loaded %d COLMAP cameras from %s (scaled to %d)", len(cameras), model_dir, render_size)
+    return cameras
+
+
+def _quat_to_rotmat(qw, qx, qy, qz):
+    """Convert COLMAP quaternion (w,x,y,z) to 3x3 rotation matrix."""
+    R = np.zeros((3, 3), dtype=np.float32)
+    R[0, 0] = 1 - 2 * (qy * qy + qz * qz)
+    R[0, 1] = 2 * (qx * qy - qz * qw)
+    R[0, 2] = 2 * (qx * qz + qy * qw)
+    R[1, 0] = 2 * (qx * qy + qz * qw)
+    R[1, 1] = 1 - 2 * (qx * qx + qz * qz)
+    R[1, 2] = 2 * (qy * qz - qx * qw)
+    R[2, 0] = 2 * (qx * qz - qy * qw)
+    R[2, 1] = 2 * (qy * qz + qx * qw)
+    R[2, 2] = 1 - 2 * (qx * qx + qy * qy)
+    return R
+
+
+# ---------------------------------------------------------------------------
 # Data classes
 # ---------------------------------------------------------------------------
 
@@ -636,14 +815,19 @@ class MeshExtractor:
         render_size: int = 1024,
         target_faces: Optional[int] = None,
         preview_dir: Optional[Path] = None,
+        colmap_dir: Optional[str] = None,
     ) -> tuple[trimesh.Trimesh, list[np.ndarray], list]:
         """Full gsplat pipeline: load PLY -> render depth+color -> TSDF -> mesh.
+
+        If colmap_dir is provided, uses COLMAP training cameras for TSDF
+        (much better for interior scenes). Falls back to orbit cameras.
 
         Args:
             ply_path: Path to 3DGS PLY file.
             num_views: Number of orbit viewpoints for depth rendering.
             render_size: Square render resolution in pixels.
             target_faces: Override face count target (uses config if None).
+            colmap_dir: Path to COLMAP output for camera loading.
 
         Returns:
             (mesh, color_images, cameras) where:
@@ -685,10 +869,18 @@ class MeshExtractor:
         logger.info("TSDF config: voxel=%.4f, trunc=%.4f, bounds=[%.2f..%.2f]",
                      voxel_size, sdf_trunc, vol_min.min(), vol_max.max())
 
-        # Generate cameras
-        cameras = generate_orbit_cameras_gsplat(
-            gaussians['means'], num_views, render_size,
-        )
+        # Generate cameras — prefer COLMAP cameras (training viewpoints)
+        cameras = []
+        if colmap_dir:
+            cameras = load_colmap_cameras(colmap_dir, render_size)
+            if cameras:
+                logger.info("Using %d COLMAP cameras for TSDF (better for interiors)", len(cameras))
+
+        if not cameras:
+            cameras = generate_orbit_cameras_gsplat(
+                gaussians['means'], num_views, render_size,
+            )
+            logger.info("Using %d orbit cameras for TSDF", len(cameras))
 
         # Render and integrate
         tsdf = TSDFVolume(tsdf_config)
