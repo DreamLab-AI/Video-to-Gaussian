@@ -873,15 +873,20 @@ class MeshExtractor:
                      voxel_size, sdf_trunc, vol_min.min(), vol_max.max())
 
         # Generate cameras — prefer COLMAP cameras (training viewpoints)
+        max_tsdf_views = 32  # Cap views to keep TSDF integration under 10 min
         cameras = []
         if colmap_dir:
             cameras = load_colmap_cameras(colmap_dir, render_size)
             if cameras:
+                # Subsample evenly if too many
+                if len(cameras) > max_tsdf_views:
+                    step = len(cameras) / max_tsdf_views
+                    cameras = [cameras[int(i * step)] for i in range(max_tsdf_views)]
                 logger.info("Using %d COLMAP cameras for TSDF (better for interiors)", len(cameras))
 
         if not cameras:
             cameras = generate_orbit_cameras_gsplat(
-                gaussians['means'], num_views, render_size,
+                gaussians['means'], min(num_views, max_tsdf_views), render_size,
             )
             logger.info("Using %d orbit cameras for TSDF", len(cameras))
 

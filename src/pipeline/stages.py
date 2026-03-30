@@ -1203,8 +1203,8 @@ class PipelineStages:
                         colmap_dir = colmap_candidate
                 mesh, color_images, cameras = extractor.extract_from_gsplat(
                     ply_path,
-                    num_views=64,
-                    render_size=1024,
+                    num_views=32,
+                    render_size=512,
                     target_faces=self.config.mesh.max_vertices // 2,
                     preview_dir=previews_dir,
                     colmap_dir=colmap_dir,
