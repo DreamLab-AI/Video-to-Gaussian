@@ -152,8 +152,10 @@ def render_gsplat(
     depth = renders[0, :, :, 3].cpu().numpy()
     alpha = alphas[0, :, :, 0].cpu().numpy()
 
-    # Zero out depth where alpha is too low (unreliable)
-    depth[alpha < 0.5] = 0.0
+    # Zero out depth where alpha is too low (empty regions)
+    # Keep threshold low to preserve thin structures; use alpha as
+    # confidence weight during TSDF integration instead of binary gate
+    depth[alpha < 0.1] = 0.0
 
     return depth, rgb, alpha
 
@@ -504,12 +506,13 @@ class TSDFVolume:
         color_image: np.ndarray,
         intrinsics: Union[CameraIntrinsics, np.ndarray],
         extrinsics: np.ndarray,
-        weight: float = 1.0,
+        weight: Union[float, np.ndarray] = 1.0,
     ) -> None:
         """Integrate a single depth frame into the TSDF volume.
 
         Args:
             depth_map: HxW float array of depth values in meters.
+            weight: Scalar or HxW per-pixel weight array (e.g. alpha map).
             color_image: HxWx3 uint8 or float array of color values.
             intrinsics: CameraIntrinsics object or 3x3 numpy K matrix.
             extrinsics: 4x4 matrix. If intrinsics is CameraIntrinsics,
@@ -598,22 +601,28 @@ class TSDFVolume:
             col_g = color_f[v_int, u_int, 1].reshape(nx_slab, self.ny, self.nz)
             col_b = color_f[v_int, u_int, 2].reshape(nx_slab, self.ny, self.nz)
 
+            # Per-pixel weight: use alpha confidence if weight is an array
+            if isinstance(weight, np.ndarray):
+                pixel_w = weight[v_int, u_int].reshape(nx_slab, self.ny, self.nz)
+            else:
+                pixel_w = weight
+
             # Weighted running average update
             old_w = self.weight[x_start:x_end]
-            new_w = old_w + weight * valid_slab.astype(np.float32)
+            new_w = old_w + pixel_w * valid_slab.astype(np.float32)
             mask = valid_slab & (new_w > 0)
 
             old_tsdf = self.tsdf[x_start:x_end]
             self.tsdf[x_start:x_end] = np.where(
                 mask,
-                (old_w * old_tsdf + weight * tsdf_slab) / np.maximum(new_w, 1e-8),
+                (old_w * old_tsdf + pixel_w * tsdf_slab) / np.maximum(new_w, 1e-8),
                 old_tsdf,
             )
             for c_idx, col_ch in enumerate([col_r, col_g, col_b]):
                 old_c = self.color[x_start:x_end, :, :, c_idx]
                 self.color[x_start:x_end, :, :, c_idx] = np.where(
                     mask,
-                    (old_w * old_c + weight * col_ch) / np.maximum(new_w, 1e-8),
+                    (old_w * old_c + pixel_w * col_ch) / np.maximum(new_w, 1e-8),
                     old_c,
                 )
             self.weight[x_start:x_end] = new_w
@@ -624,7 +633,12 @@ class TSDFVolume:
         Returns:
             A trimesh.Trimesh with vertex colors.
         """
-        observed = self.weight > 0
+        # Require multi-view consensus: voxels seen from 2+ views with confidence
+        # Single-view voxels produce noisy surfaces
+        observed = self.weight > 2.0
+        if not np.any(observed):
+            # Fall back to any observed voxel
+            observed = self.weight > 0
         if not np.any(observed):
             raise ValueError("TSDF volume is empty -- no depth frames were integrated")
 
@@ -846,21 +860,22 @@ class MeshExtractor:
         logger.info("Loaded %d gaussians in %.1fs",
                      gaussians['count'], time.time() - t_start)
 
-        # Compute scene bounds for TSDF volume
+        # Compute scene bounds for TSDF volume (1st-99th percentile captures more)
         pts = gaussians['means'].cpu().numpy()
-        p5, p95 = np.percentile(pts, [5, 95], axis=0)
-        center = (p5 + p95) / 2.0
-        extent = p95 - p5
-        padding = extent * 0.3
-        vol_min = p5 - padding
-        vol_max = p95 + padding
+        p1, p99 = np.percentile(pts, [1, 99], axis=0)
+        center = (p1 + p99) / 2.0
+        extent = p99 - p1
+        padding = extent * 0.15  # Was 0.3 — less padding = more voxels on actual scene
+        vol_min = p1 - padding
+        vol_max = p99 + padding
         vol_extent = vol_max - vol_min
 
-        # Adaptive voxel size: aim for ~200 voxels per axis
-        # Trade-off: 150^3=2min (coarse), 200^3=16min (good), 300^3=2hr (too slow)
+        # Adaptive voxel size: aim for ~300 voxels per axis
+        # 200^3 was too coarse (7.5cm voxels for 15m scene = lumpy output)
+        # 300^3 gives 5cm voxels = adequate for most architectural features
         max_dim = vol_extent.max()
-        voxel_size = max(max_dim / 200.0, 0.005)
-        sdf_trunc = voxel_size * 5.0
+        voxel_size = max(max_dim / 300.0, 0.005)
+        sdf_trunc = voxel_size * 3.0  # Was 5.0 — too thick for thin structures
 
         tsdf_config = TSDFConfig(
             voxel_size=voxel_size,
@@ -874,7 +889,7 @@ class MeshExtractor:
                      voxel_size, sdf_trunc, vol_min.min(), vol_max.max())
 
         # Generate cameras — prefer COLMAP cameras (training viewpoints)
-        max_tsdf_views = 48  # Cap views — balance quality vs time (~16 min at 200^3)
+        max_tsdf_views = 100  # More views = better coverage. 300^3 grid is the bottleneck, not rendering.
         cameras = []
         if colmap_dir:
             cameras = load_colmap_cameras(colmap_dir, render_size)
@@ -931,9 +946,11 @@ class MeshExtractor:
             K_np = K.cpu().numpy().astype(np.float64)
             viewmat_np = viewmat.cpu().numpy().astype(np.float64)
 
-            # Make color HxWx3 for TSDF
+            # Make color HxWx3 for TSDF — use alpha as per-pixel confidence weight
+            # Expected depth is unreliable at low alpha (multi-surface blending)
             rgb_for_tsdf = rgb.copy()
-            tsdf.integrate(depth, rgb_for_tsdf, K_np, viewmat_np)
+            tsdf.integrate(depth, rgb_for_tsdf, K_np, viewmat_np,
+                           weight=alpha)
             integrated += 1
 
             if (i + 1) % 16 == 0:
