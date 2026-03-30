@@ -50,7 +50,8 @@ __pycache__/
 src/python/stubs/lichtfeld/build_info.pyi
 tasks/
 __pycache__/
-__pycache__/
 *.pyc
 .venv*/
+test-data/
+research/gap-analysis-local/
 !docs/renders/*.jpg
