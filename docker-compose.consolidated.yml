@@ -51,6 +51,10 @@ services:
       - hf-cache:/root/.cache/huggingface
       # Claude Code OAuth session (survives container recreation)
       - claude-session:/home/ubuntu/.claude
+      # Live pipeline source (override baked-in code for dev iteration)
+      - ./src/pipeline:/opt/gaussian-toolkit/src/pipeline
+      - ./src/web:/opt/gaussian-toolkit/src/web
+      - ./CLAUDE_CONTAINER.md:/opt/gaussian-toolkit/CLAUDE.md:ro
 
     restart: unless-stopped
 
