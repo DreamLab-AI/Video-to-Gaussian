@@ -2,14 +2,14 @@
 # SPDX-FileCopyrightText: 2026 LichtFeld Studio Authors
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""Standalone USD scene assembler. Run with Python 3.11 + usd-core.
+"""Standalone USD scene assembler. Run with Python 3.12 + usd-core.
 
 Reads a job directory produced by the LichtFeld pipeline and assembles a
 proper Blender-loadable USD scene with textured meshes, cameras, and a full
 scene graph hierarchy.
 
 Usage:
-    python3.11 scripts/assemble_usd_scene.py \
+    python3 scripts/assemble_usd_scene.py \
         --job-dir /data/output/JOB_ID \
         --output /data/output/JOB_ID/usd/scene.usda
 

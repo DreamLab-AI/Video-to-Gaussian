@@ -46,6 +46,7 @@ STAGE_NAMES: list[str] = [
     "select_frames",
     "reconstruct",
     "train",
+    "render_previews",
     "segment",
     "extract_objects",
     "mesh_objects",
@@ -191,31 +192,8 @@ def _write_minimal_usda(path: Path, meshes: list[dict[str, Any]]) -> None:
     path.write_text("\n".join(lines), encoding="utf-8")
 
 
-def _find_usd_python() -> Path | None:
-    """Locate a Python 3.11 interpreter with usd-core installed.
 
-    Checks well-known venv paths and the system python3.11 in order
-    of preference.
-    """
-    candidates = [
-        Path("/opt/venv-usd/bin/python3"),
-        Path.home() / "workspace" / "gaussians" / "LichtFeld-Studio" / ".venv-usd" / "bin" / "python3",
-        Path("/usr/bin/python3.11"),
-    ]
-    for p in candidates:
-        if not p.exists():
-            continue
-        try:
-            result = subprocess.run(
-                [str(p), "-c", "from pxr import Usd; print('ok')"],
-                capture_output=True, text=True, timeout=10,
-                env={**os.environ, "PYTHONPATH": ""},
-            )
-            if result.returncode == 0 and "ok" in result.stdout:
-                return p
-        except (OSError, subprocess.TimeoutExpired):
-            continue
-    return None
+# _find_usd_python removed: python3 (3.12) has usd-core installed directly
 
 
 def _get_file_size_mb(path: Path) -> float:
@@ -241,6 +219,10 @@ class PipelineStages:
         self.job_dir = Path(job_dir)
         self.config = config or PipelineConfig()
         self.config.output_dir = str(self.job_dir)
+
+        # Pre-flight dependency check -- fail hard if critical deps are missing
+        from pipeline.preflight import check_all as preflight_check
+        self._preflight = preflight_check()
 
     # ------------------------------------------------------------------
     # Stage 1: Ingest
@@ -490,6 +472,25 @@ class PipelineStages:
                     error="COLMAP output not found at expected paths",
                 )
 
+        # Check COLMAP registration rate
+        sparse_images_bin = dataset_dir / "sparse" / "0" / "images.bin"
+        if sparse_images_bin.exists():
+            import struct as _struct
+            try:
+                with open(sparse_images_bin, 'rb') as f:
+                    n_registered = _struct.unpack('<Q', f.read(8))[0]
+                n_total = len(list(frames_path.glob('*.jpg'))) + len(list(frames_path.glob('*.png')))
+                rate = n_registered / max(n_total, 1)
+                logger.info("COLMAP registration: %d/%d (%.0f%%)", n_registered, n_total, rate * 100)
+                if rate < 0.3:
+                    return StageResult(
+                        success=False, stage="reconstruct",
+                        error=f"COLMAP only registered {rate*100:.0f}% of frames (need >30%)",
+                        metrics={"registered": n_registered, "total": n_total, "rate": round(rate, 3)},
+                    )
+            except Exception as reg_exc:
+                logger.warning("Could not check registration rate: %s", reg_exc)
+
         # Count cameras / points if available
         sparse_dir = dataset_dir / "sparse" / "0"
         cameras = len(list(sparse_dir.glob("cameras.*"))) if sparse_dir.exists() else 0
@@ -517,10 +518,18 @@ class PipelineStages:
             "--ImageReader.single_camera", "1",
         ], check=True, capture_output=True, timeout=300)
 
-        subprocess.run([
-            colmap, self.config.reconstruct.matcher + "_matcher",
+        matcher_type = self.config.reconstruct.matcher + "_matcher"
+        matcher_cmd = [
+            colmap, matcher_type,
             "--database_path", str(db_path),
-        ], check=True, capture_output=True, timeout=300)
+        ]
+        # Add sequential-matcher-specific parameters for better overlap coverage
+        if self.config.reconstruct.matcher == "sequential":
+            matcher_cmd += [
+                "--SequentialMatching.overlap", "30",
+                "--SequentialMatching.loop_detection", "1",
+            ]
+        subprocess.run(matcher_cmd, check=True, capture_output=True, timeout=600)
 
         subprocess.run([
             colmap, "mapper",
@@ -630,6 +639,158 @@ class PipelineStages:
         )
 
     # ------------------------------------------------------------------
+    # Stage 5b: Render previews
+    # ------------------------------------------------------------------
+
+    def render_previews(self, ply_path: str, colmap_dir: str, num_views: int = 8) -> StageResult:
+        """Render RGB + depth previews from COLMAP camera positions using gsplat.
+
+        Saves to job_dir/previews/ for the web carousel.
+
+        Args:
+            ply_path: Path to trained 3DGS PLY.
+            colmap_dir: Path to COLMAP reconstruction (with sparse/0/).
+            num_views: Number of preview views to render.
+
+        Returns: {preview_dir, rendered_count}
+        """
+        import struct
+        import numpy as np
+
+        trained_ply = Path(ply_path)
+        dataset_dir = Path(colmap_dir)
+        if not trained_ply.exists():
+            return StageResult(success=False, stage="render_previews",
+                               error=f"PLY not found: {ply_path}")
+
+        preview_dir = self.job_dir / "previews"
+        preview_dir.mkdir(parents=True, exist_ok=True)
+        saved_files: list[str] = []
+
+        try:
+            import torch
+            from pipeline.mesh_extractor import load_3dgs_ply, render_gsplat
+
+            gaussians = load_3dgs_ply(str(trained_ply))
+
+            # Parse COLMAP cameras (binary format)
+            sparse_dir = dataset_dir / "sparse" / "0"
+            images_bin = sparse_dir / "images.bin"
+            cameras_bin = sparse_dir / "cameras.bin"
+
+            viewmats = []
+            K_matrix = None
+
+            if cameras_bin.exists() and images_bin.exists():
+                # Read camera intrinsics
+                with open(cameras_bin, 'rb') as f:
+                    n_cams = struct.unpack('<Q', f.read(8))[0]
+                    for _ in range(n_cams):
+                        cam_id, model_id, w, h = struct.unpack('<iiii', f.read(16))
+                        w = w & 0xFFFFFFFF
+                        h = h & 0xFFFFFFFF
+                        # Read params (assume PINHOLE: fx, fy, cx, cy)
+                        n_params = 4
+                        params = struct.unpack(f'<{n_params}d', f.read(8 * n_params))
+                        if K_matrix is None:
+                            K_matrix = torch.tensor([
+                                [params[0], 0.0, params[2]],
+                                [0.0, params[1], params[3]],
+                                [0.0, 0.0, 1.0],
+                            ], dtype=torch.float32, device='cuda')
+                            render_w, render_h = int(w), int(h)
+
+                # Read image poses
+                with open(images_bin, 'rb') as f:
+                    n_images = struct.unpack('<Q', f.read(8))[0]
+                    for _ in range(n_images):
+                        img_id = struct.unpack('<i', f.read(4))[0]
+                        qw, qx, qy, qz = struct.unpack('<4d', f.read(32))
+                        tx, ty, tz = struct.unpack('<3d', f.read(24))
+                        cam_id = struct.unpack('<i', f.read(4))[0]
+                        # Read null-terminated name
+                        name_bytes = b""
+                        while True:
+                            c = f.read(1)
+                            if c == b"\x00" or c == b"":
+                                break
+                            name_bytes += c
+                        n_pts2d = struct.unpack('<Q', f.read(8))[0]
+                        f.read(n_pts2d * 24)
+
+                        # Build viewmat from quaternion + translation
+                        q = np.array([qw, qx, qy, qz], dtype=np.float64)
+                        q /= np.linalg.norm(q)
+                        w_ = q[0]; x_ = q[1]; y_ = q[2]; z_ = q[3]
+                        R = np.array([
+                            [1-2*(y_*y_+z_*z_), 2*(x_*y_-z_*w_), 2*(x_*z_+y_*w_)],
+                            [2*(x_*y_+z_*w_), 1-2*(x_*x_+z_*z_), 2*(y_*z_-x_*w_)],
+                            [2*(x_*z_-y_*w_), 2*(y_*z_+x_*w_), 1-2*(x_*x_+y_*y_)],
+                        ], dtype=np.float64)
+                        t = np.array([tx, ty, tz], dtype=np.float64)
+                        vm = np.eye(4, dtype=np.float64)
+                        vm[:3, :3] = R
+                        vm[:3, 3] = t
+                        viewmats.append(vm)
+            else:
+                # No COLMAP cameras; generate orbit cameras
+                from pipeline.mesh_extractor import generate_orbit_cameras_gsplat
+                orbit_cams = generate_orbit_cameras_gsplat(
+                    gaussians['means'], num_views, 1024,
+                )
+                for vm_t, K_t in orbit_cams:
+                    viewmats.append(vm_t.cpu().numpy())
+                    if K_matrix is None:
+                        K_matrix = K_t
+                        render_w, render_h = 1024, 1024
+
+            # Render first num_views cameras
+            step = max(1, len(viewmats) // num_views)
+            selected_indices = list(range(0, len(viewmats), step))[:num_views]
+
+            for idx in selected_indices:
+                vm = viewmats[idx]
+                vm_tensor = torch.tensor(vm, dtype=torch.float32, device='cuda')
+                depth, rgb, alpha = render_gsplat(
+                    gaussians, vm_tensor, K_matrix, render_w, render_h,
+                )
+
+                # Save RGB preview
+                from PIL import Image
+                rgb_uint8 = np.clip(rgb * 255, 0, 255).astype(np.uint8)
+                rgb_path = preview_dir / f"preview_render_view{idx:02d}.jpg"
+                Image.fromarray(rgb_uint8).save(str(rgb_path), quality=90)
+                saved_files.append(str(rgb_path))
+
+                # Save depth colormap
+                import matplotlib
+                matplotlib.use('Agg')
+                import matplotlib.pyplot as plt
+                fig, ax = plt.subplots(1, 1, figsize=(10, 7.5))
+                ax.imshow(depth, cmap='turbo')
+                ax.axis('off')
+                depth_path = preview_dir / f"preview_depth_view{idx:02d}.jpg"
+                fig.savefig(str(depth_path), bbox_inches='tight', dpi=100)
+                plt.close(fig)
+                saved_files.append(str(depth_path))
+
+            logger.info("Rendered %d preview views to %s", len(selected_indices), preview_dir)
+
+        except Exception as exc:
+            logger.warning("Preview rendering failed: %s", exc)
+            return StageResult(
+                success=True, stage="render_previews",
+                metrics={"skipped": True, "reason": str(exc)},
+                artifacts={"preview_dir": str(preview_dir)},
+            )
+
+        return StageResult(
+            success=True, stage="render_previews",
+            metrics={"rendered_count": len(selected_indices), "files": len(saved_files)},
+            artifacts={"preview_dir": str(preview_dir), "previews": json.dumps(saved_files)},
+        )
+
+    # ------------------------------------------------------------------
     # Stage 6: Segment (SAM2/SAM3)
     # ------------------------------------------------------------------
 
@@ -674,35 +835,80 @@ class PipelineStages:
                     confidence_threshold=decompose_cfg.sam3_confidence_threshold,
                 )
 
-                image = cv2.imread(str(frame_paths[0]))
-                if image is None:
+                # Segment every 10th frame and merge results for robustness
+                sample_step = max(1, min(10, len(frame_paths) // 3))
+                sampled_frames = frame_paths[::sample_step]
+                logger.info("SAM3: segmenting %d/%d frames (step=%d)",
+                            len(sampled_frames), len(frame_paths), sample_step)
+
+                all_masks: dict[str, list[np.ndarray]] = {}  # concept -> list of masks
+                all_id_to_concept: dict[int, str] = {}
+
+                for frame_path in sampled_frames:
+                    image = cv2.imread(str(frame_path))
+                    if image is None:
+                        continue
+                    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+
+                    frame_result, frame_id_map = seg.segment_by_concepts(
+                        image, concepts,
+                        confidence_threshold=decompose_cfg.sam3_confidence_threshold,
+                    )
+                    all_id_to_concept.update(frame_id_map)
+
+                    for obj_id in frame_result.object_ids:
+                        concept = frame_id_map.get(int(obj_id), "unknown")
+                        mask = frame_result.masks[frame_result.object_ids == obj_id]
+                        if concept not in all_masks:
+                            all_masks[concept] = []
+                        all_masks[concept].append(mask[0] if mask.ndim == 3 else mask)
+
+                # Merge masks per concept: union across frames (resize to first frame's shape)
+                first_image = cv2.imread(str(frame_paths[0]))
+                if first_image is None:
                     return StageResult(
                         success=False, stage="segment",
                         error=f"Failed to read frame {frame_paths[0]}",
                     )
-                image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-
-                result, id_to_concept = seg.segment_by_concepts(
-                    image, concepts,
-                    confidence_threshold=decompose_cfg.sam3_confidence_threshold,
-                )
+                ref_h, ref_w = first_image.shape[:2]
 
                 objects: list[dict[str, Any]] = []
-                for obj_id in result.object_ids:
-                    concept = id_to_concept.get(int(obj_id), "unknown")
-                    mask_pixels = int(result.masks[result.object_ids == obj_id].sum())
-                    objects.append({
-                        "label": concept,
-                        "object_id": int(obj_id),
-                        "mask_pixels": mask_pixels,
-                    })
+                merged_masks: list[np.ndarray] = []
+                merged_ids: list[int] = []
+                next_id = 1
 
-                # Save masks
+                for concept, mask_list in all_masks.items():
+                    # Union all masks for this concept (resize if needed)
+                    merged = np.zeros((ref_h, ref_w), dtype=bool)
+                    for m in mask_list:
+                        if m.shape != (ref_h, ref_w):
+                            m_resized = cv2.resize(
+                                m.astype(np.uint8), (ref_w, ref_h),
+                                interpolation=cv2.INTER_NEAREST,
+                            ).astype(bool)
+                        else:
+                            m_resized = m
+                        merged |= m_resized
+
+                    mask_pixels = int(merged.sum())
+                    if mask_pixels > 0:
+                        objects.append({
+                            "label": concept,
+                            "object_id": next_id,
+                            "mask_pixels": mask_pixels,
+                        })
+                        merged_masks.append(merged)
+                        merged_ids.append(next_id)
+                        next_id += 1
+
+                id_to_concept = {obj["object_id"]: obj["label"] for obj in objects}
+
+                # Save merged masks
                 masks_dir = self.job_dir / "sam3_masks"
                 masks_dir.mkdir(parents=True, exist_ok=True)
-                for i, obj_id in enumerate(result.object_ids):
-                    mask_path = masks_dir / f"mask_{int(obj_id):04d}.npy"
-                    np.save(str(mask_path), result.masks[i])
+                for obj_id, mask in zip(merged_ids, merged_masks):
+                    mask_path = masks_dir / f"mask_{obj_id:04d}.npy"
+                    np.save(str(mask_path), mask)
 
                 seg.unload()
 
@@ -969,11 +1175,14 @@ class PipelineStages:
                 extractor = MeshExtractor(config=TSDFConfig(
                     target_faces=self.config.mesh.max_vertices // 2,
                 ))
+                previews_dir = self.job_dir / "previews"
+                previews_dir.mkdir(parents=True, exist_ok=True)
                 mesh, color_images, cameras = extractor.extract_from_gsplat(
                     ply_path,
                     num_views=64,
                     render_size=1024,
                     target_faces=self.config.mesh.max_vertices // 2,
+                    preview_dir=previews_dir,
                 )
                 # gsplat returns mesh in world coordinates already, no rescale needed
                 mesh.export(str(mesh_glb_path))
@@ -1090,11 +1299,18 @@ class PipelineStages:
         except Exception as exc:
             logger.warning("Open3D fallback failed for '%s': %s", label, exc)
 
-        # Strategy 5: Convex hull
+        # Strategy 5: Convex hull (last resort -- often produces garbage)
         try:
             pcd = trimesh.PointCloud(points)
             mesh = pcd.convex_hull
             if mesh is not None and len(mesh.vertices) > 0:
+                if len(mesh.vertices) < 5000:
+                    logger.error(
+                        "Mesh extraction produced only %d vertices (convex hull fallback). "
+                        "This indicates gsplat/TSDF failed. Check dependencies.",
+                        len(mesh.vertices),
+                    )
+                    return None
                 mesh.export(str(mesh_glb_path))
                 mesh.export(str(mesh_obj_path))
                 vc = len(mesh.vertices)
@@ -1186,14 +1402,11 @@ class PipelineStages:
     # ------------------------------------------------------------------
 
     def assemble_usd(self, objects: dict | list | str, cameras: dict | str | None = None) -> StageResult:
-        """Compose USD scene from meshes using the standalone Python 3.11 assembler.
+        """Compose USD scene from meshes using the standalone assembler.
 
-        The standalone script (scripts/assemble_usd_scene.py) runs under a
-        Python 3.11 venv with usd-core, since usd-core has no wheels for
-        Python 3.12+. The script discovers COLMAP cameras, meshes, textures,
-        and PLY files from the job directory and builds a proper USD stage.
-
-        Falls back to a minimal USDA stub if the subprocess fails.
+        The standalone script (scripts/assemble_usd_scene.py) runs under
+        python3 (3.12) with usd-core installed directly. Falls back to a
+        minimal USDA stub if the subprocess fails.
 
         Args:
             objects: Mesh results (from mesh_objects) as list/dict/JSON string.
@@ -1223,21 +1436,17 @@ class PipelineStages:
             # Docker container path
             script_path = Path("/opt/gaussian-toolkit/scripts/assemble_usd_scene.py")
 
-        # Find Python 3.11 with usd-core
-        usd_python = _find_usd_python()
-
         assembled = False
-        if usd_python and script_path.exists():
+        if script_path.exists():
             try:
                 result = subprocess.run(
                     [
-                        str(usd_python),
+                        "python3",
                         str(script_path),
                         "--job-dir", str(self.job_dir),
                         "--output", str(usd_path),
                     ],
                     capture_output=True, text=True, timeout=120,
-                    env={**os.environ, "PYTHONPATH": ""},
                 )
                 if result.returncode == 0:
                     assembled = True

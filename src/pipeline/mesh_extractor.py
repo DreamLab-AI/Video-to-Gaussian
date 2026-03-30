@@ -635,6 +635,7 @@ class MeshExtractor:
         num_views: int = 64,
         render_size: int = 1024,
         target_faces: Optional[int] = None,
+        preview_dir: Optional[Path] = None,
     ) -> tuple[trimesh.Trimesh, list[np.ndarray], list]:
         """Full gsplat pipeline: load PLY -> render depth+color -> TSDF -> mesh.
 
@@ -704,6 +705,23 @@ class MeshExtractor:
             if valid_pixels < 100:
                 logger.debug("View %d: only %d valid pixels, skipping", i, valid_pixels)
                 continue
+
+            # Save depth colormap preview (every 8th view)
+            if i % 8 == 0 and preview_dir:
+                try:
+                    import matplotlib
+                    matplotlib.use('Agg')
+                    import matplotlib.pyplot as plt
+                    fig, ax = plt.subplots(1, 1, figsize=(10, 7.5))
+                    ax.imshow(depth, cmap='turbo')
+                    ax.axis('off')
+                    fig.savefig(
+                        str(preview_dir / f'depth_view_{i:03d}.jpg'),
+                        bbox_inches='tight', dpi=100,
+                    )
+                    plt.close(fig)
+                except Exception as preview_exc:
+                    logger.debug("Failed to save depth preview for view %d: %s", i, preview_exc)
 
             # Store color for texture baking
             color_images.append(rgb.copy())

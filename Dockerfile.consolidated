@@ -14,10 +14,8 @@ ARG MAKEFLAGS="-j$(nproc)"
 # ---------------------------------------------------------------------------
 RUN apt-get update && apt-get install -y --no-install-recommends \
         software-properties-common ca-certificates gnupg lsb-release \
-    && add-apt-repository -y ppa:deadsnakes/ppa \
     && apt-get update && apt-get install -y --no-install-recommends \
         build-essential cmake ninja-build nasm git curl wget ffmpeg imagemagick \
-        python3.11 python3.11-venv python3.11-dev \
         python3.12 python3.12-venv python3.12-dev python3-pip \
         libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 \
         autoconf autoconf-archive automake libtool pkg-config \
@@ -31,9 +29,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         jq zip unzip \
     && rm -rf /var/lib/apt/lists/*
 
-# Make python3.12 the default python3
-RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.12 2 \
-    && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1
+# python3.12 is the only python3 — no alternatives needed
 
 # ---------------------------------------------------------------------------
 # PHASE 2: Node.js 23 (for Claude Code tooling)
@@ -169,10 +165,8 @@ RUN pip3 install --break-system-packages --ignore-installed \
         "sam3 @ git+https://github.com/facebookresearch/sam3.git" \
         || echo "SAM3 pip install skipped — text-prompted segmentation unavailable"
 
-# USD requires python3.11 — isolated venv (PYTHONPATH="" needed at runtime)
-RUN python3.11 -m venv --without-pip /opt/venv-usd && \
-    curl -sS https://bootstrap.pypa.io/get-pip.py | /opt/venv-usd/bin/python3 && \
-    /opt/venv-usd/bin/pip install usd-core numpy trimesh
+# usd-core has cp312 wheels — install directly into the system python
+RUN pip3 install --break-system-packages usd-core
 
 # Install SplatReady plugin for LichtFeld
 RUN git clone https://github.com/jacobvanbeets/SplatReady.git \
@@ -259,7 +253,7 @@ ENV NVIDIA_VISIBLE_DEVICES=all
 ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics
 ENV CUDA_HOME=/usr/local/cuda
 ENV DISPLAY=:1
-ENV PATH="/opt/gaussian-toolkit/build:/opt/venv-usd/bin:${PATH}"
+ENV PATH="/opt/gaussian-toolkit/build:${PATH}"
 ENV LD_LIBRARY_PATH="/usr/local/cuda/lib64:/usr/local/lib:${LD_LIBRARY_PATH}"
 ENV VCPKG_ROOT=/opt/vcpkg
 
