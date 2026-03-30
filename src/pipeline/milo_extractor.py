@@ -3,17 +3,15 @@
 
 """MILo mesh extraction -- differentiable mesh-in-the-loop gaussian splatting.
 
-Runs MILo (github.com/Anttwo/MILo, SIGGRAPH Asia 2025) in an isolated conda
-environment (Python 3.9, CUDA 11.8). Produces high-quality meshes via Delaunay
-triangulation + learned SDF.
+Runs MILo (github.com/Anttwo/MILo, SIGGRAPH Asia 2025) in a sidecar Docker
+container (Ubuntu 22.04, Python 3.9, CUDA 11.8). Produces high-quality meshes
+via Delaunay triangulation + learned SDF.
 
-MILo cannot run in our main Python 3.12 environment. It requires:
-  - Python 3.9, PyTorch 2.3.1, CUDA 11.8
-  - conda env ``milo`` with CGAL, GMP, and 8 custom CUDA submodules
-  - /opt/milo/train.py (or MILO_DIR env var)
+MILo cannot run in our main container (Python 3.12, CUDA 12.8, Ubuntu 24.04)
+because its CUDA extensions require CUDA 11.8 + GCC <= 11. Instead it runs
+in a dedicated ``milo`` sidecar container via ``docker exec``.
 
-This module wraps MILo as subprocess calls within the conda env and returns
-paths to the resulting mesh PLY.
+Falls back to conda env if the sidecar is not available.
 """
 
 from __future__ import annotations
@@ -63,30 +61,45 @@ class MiloConfig:
     extract_timeout: int = 600
 
 
-def is_milo_available() -> bool:
-    """Check if MILo is installed and the conda env exists.
+def _milo_exec_prefix() -> list[str]:
+    """Return the command prefix for running MILo.
 
-    Returns True only if ``MILO_DIR/train.py`` exists AND the conda env
-    can import torch successfully.
+    Tries docker exec first (sidecar container), falls back to conda.
     """
-    if not (MILO_DIR / "train.py").exists():
-        logger.debug("MILo train.py not found at %s", MILO_DIR / "train.py")
-        return False
+    # Try docker sidecar
+    try:
+        result = subprocess.run(
+            ["docker", "exec", "milo", "python3", "-c", "import torch; print('ok')"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0:
+            return ["docker", "exec", "milo", "python3"]
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
 
+    # Try conda env
     try:
         result = subprocess.run(
             ["conda", "run", "-n", MILO_CONDA_ENV,
-             "python", "-c", "import torch; print(torch.__version__)"],
+             "python", "-c", "import torch; print('ok')"],
             capture_output=True, text=True, timeout=30,
         )
-        if result.returncode != 0:
-            logger.debug("MILo conda env check failed: %s", result.stderr[:200])
-            return False
-        logger.debug("MILo conda env OK, torch=%s", result.stdout.strip())
-        return True
-    except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
-        logger.debug("MILo availability check failed: %s", exc)
+        if result.returncode == 0:
+            return ["conda", "run", "--no-capture-output", "-n", MILO_CONDA_ENV, "python"]
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+
+    return []
+
+
+def is_milo_available() -> bool:
+    """Check if MILo is available via docker sidecar or conda env."""
+    prefix = _milo_exec_prefix()
+    if not prefix:
+        logger.debug("MILo not available (no docker sidecar or conda env)")
         return False
+    logger.debug("MILo available via: %s", " ".join(prefix[:3]))
+    return True
 
 
 def _find_sparse_dir(colmap_path: Path) -> Optional[Path]:
@@ -160,9 +173,19 @@ def run_milo(
     t_start = time.time()
 
     # -- Step 1: MILo training -----------------------------------------------
-    train_cmd = [
-        "conda", "run", "--no-capture-output", "-n", MILO_CONDA_ENV,
-        "python", str(MILO_DIR / "train.py"),
+    exec_prefix = _milo_exec_prefix()
+    if not exec_prefix:
+        result["error"] = "MILo not available (no docker sidecar or conda env)"
+        return result
+
+    # Determine MILo script path based on execution mode
+    milo_train = str(MILO_DIR / "train.py")
+    if exec_prefix[0] == "docker":
+        # Docker sidecar — MILo is at /opt/milo inside the container
+        milo_train = "/opt/milo/train.py"
+
+    train_cmd = exec_prefix + [
+        milo_train,
         "-s", str(dataset_root),
         "-m", str(output_path),
         "--imp_metric", cfg.imp_metric,
@@ -202,9 +225,12 @@ def run_milo(
         "regular_tsdf": "mesh_extract_regular_tsdf.py",
     }.get(cfg.mesh_extract_method, "mesh_extract_sdf.py")
 
-    extract_cmd = [
-        "conda", "run", "--no-capture-output", "-n", MILO_CONDA_ENV,
-        "python", str(MILO_DIR / extract_script),
+    milo_extract = str(MILO_DIR / extract_script)
+    if exec_prefix[0] == "docker":
+        milo_extract = f"/opt/milo/{extract_script}"
+
+    extract_cmd = exec_prefix + [
+        milo_extract,
         "-s", str(dataset_root),
         "-m", str(output_path),
         "--rasterizer", cfg.rasterizer,

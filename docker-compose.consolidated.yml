@@ -69,6 +69,31 @@ services:
       retries: 5
       start_period: 120s
 
+  # MILo sidecar — high-quality mesh extraction (Ubuntu 22.04 + CUDA 11.8)
+  # Build: docker compose build milo
+  # The main container calls MILo via: docker exec milo python3 train.py ...
+  milo:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.milo
+    image: gaussian-toolkit-milo:latest
+    container_name: milo
+    runtime: nvidia
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu, compute, utility]
+    volumes:
+      - ./output:/data/output
+      - hf-cache:/root/.cache/huggingface
+    entrypoint: ["sleep", "infinity"]
+    restart: unless-stopped
+    profiles:
+      - milo
+
 volumes:
   models-data:
     driver: local
