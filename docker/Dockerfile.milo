@@ -61,14 +61,13 @@ RUN pip3 install \
 # PLY-to-GLB export capability for web viewer
 RUN pip3 install pygltflib
 
-# Verify
-RUN python3 -c " \
-import torch; print(f'PyTorch {torch.__version__}, CUDA {torch.cuda.is_available()}'); \
-import diff_gaussian_rasterization; print('diff-gaussian-rasterization OK'); \
-import simple_knn; print('simple-knn OK'); \
-from fused_ssim import fused_ssim; print('fused-ssim OK'); \
-import nvdiffrast; print(f'nvdiffrast {nvdiffrast.__version__} OK'); \
-print('MILo build verified')"
+# Verify core extensions
+RUN python3 -c "import torch; print(f'PyTorch {torch.__version__}, CUDA {torch.cuda.is_available()}')"
+RUN python3 -c "import diff_gaussian_rasterization; print('diff-gaussian-rasterization OK')"
+RUN python3 -c "import simple_knn; print('simple-knn OK')"
+RUN python3 -c "from fused_ssim import fused_ssim; print('fused-ssim OK')"
+RUN python3 -c "import nvdiffrast; print('nvdiffrast OK')"
+RUN echo "MILo build verified"
 # Non-critical rasterizer variants (may not exist in all MILo versions)
 RUN python3 -c "import diff_gaussian_rasterization_ms; print('diff-gaussian-rasterization_ms OK')" || true
 RUN python3 -c "import diff_gaussian_rasterization_gof; print('diff-gaussian-rasterization_gof OK')" || true
