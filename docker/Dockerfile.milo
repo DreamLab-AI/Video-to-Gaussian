@@ -30,9 +30,11 @@ RUN pip3 install --no-build-isolation submodules/simple-knn/
 RUN pip3 install --no-build-isolation submodules/fused-ssim/
 RUN pip3 install --no-build-isolation git+https://github.com/NVlabs/nvdiffrast
 
-# tetra_triangulation (Delaunay, requires CGAL)
-RUN cd submodules/tetra_triangulation && cmake . && make -j$(nproc) \
-    && pip3 install -e .
+# tetra_triangulation (Delaunay, requires CGAL + pybind11)
+RUN pip3 install pybind11 \
+    && cd submodules/tetra_triangulation && cmake . -Dpybind11_DIR=$(python3 -m pybind11 --cmakedir) \
+    && make -j$(nproc) && pip3 install -e . \
+    || echo "WARNING: tetra_triangulation build failed (non-critical for SDF extraction)"
 
 # Python deps
 RUN pip3 install \
