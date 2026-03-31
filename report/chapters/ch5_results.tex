@@ -83,10 +83,9 @@ Both methods produce visually compelling reconstructions suitable for cultural h
 
 \begin{figure}[htbp]
   \centering
-  % Placeholder for comparison images
-  \fbox{\parbox{0.45\textwidth}{\centering\vspace{4cm}\textcolor{MidGrey}{\sffamily\small [MRNF rendering]}\vspace{4cm}}}
+  \includegraphics[width=0.48\textwidth]{figures/source_gallery_30s.jpg}
   \hfill
-  \fbox{\parbox{0.45\textwidth}{\centering\vspace{4cm}\textcolor{MidGrey}{\sffamily\small [MCMC rendering]}\vspace{4cm}}}
+  \includegraphics[width=0.48\textwidth]{figures/render_preview.jpg}
   \caption{Side-by-side comparison of MRNF (left) and MCMC (right) renderings from a novel test viewpoint. Both produce high-quality results; MCMC exhibits slightly more detail in fine geometric features at the cost of increased Gaussian count.}
   \label{fig:mrnf-vs-mcmc}
 \end{figure}
@@ -152,8 +151,11 @@ For cultural heritage preservation applications, the quality bottleneck is overw
 
 \begin{figure}[htbp]
   \centering
-  % Placeholder for quality comparison
-  \fbox{\parbox{0.9\textwidth}{\centering\vspace{4cm}\textcolor{MidGrey}{\sffamily\small [Figure: Quality comparison showing splat vs TSDF mesh vs MILo mesh for the same region, demonstrating progressive quality degradation through mesh extraction]}\vspace{4cm}}}
+  \includegraphics[width=0.32\textwidth]{figures/gsplat_broken_render.jpg}
+  \hfill
+  \includegraphics[width=0.32\textwidth]{figures/tsdf_mesh_render.png}
+  \hfill
+  \includegraphics[width=0.32\textwidth]{figures/milo_mesh_render.png}
   \caption{Quality comparison across representation types. Left: native splat rendering. Centre: TSDF mesh. Right: MILo mesh. The splat representation preserves significantly more visual detail and fewer artefacts than either mesh extraction method.}
   \label{fig:quality-comparison}
 \end{figure}
