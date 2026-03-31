@@ -1,0 +1,7 @@
+output/
+*.glb
+*.ply
+*.mp4
+test-data/
+research/gap-analysis-local/
+.git/
