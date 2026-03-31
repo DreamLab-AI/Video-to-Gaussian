@@ -132,3 +132,35 @@ For the \pounds10K AI KE CoP pilot, we recommend the \textbf{Starter Tier} (\pou
 \end{itemize}
 The remaining budget supports DreamLab AI consultation time (\pounds3,600), technical staff (\pounds5,250), and equipment sourcing.
 \end{keyfinding}
+
+\section{Comparison with Commercial 3D Scanning Services}
+\label{sec:commercial-comparison}
+
+To contextualise the cost efficiency of the AI-driven pipeline, we surveyed commercial 3D scanning providers in the Greater Manchester area. Table~\ref{tab:commercial-scanning} summarises typical pricing.
+
+\begin{table}[htbp]
+\centering
+\caption{Commercial 3D scanning costs in Greater Manchester (March 2026).}
+\label{tab:commercial-scanning}
+\small
+\begin{tabular}{@{}p{5.5cm}rr@{}}
+\toprule
+\textbf{Service} & \textbf{Cost Range} & \textbf{vs.\ Pipeline} \\
+\midrule
+Room-scale LIDAR point cloud (150\,m\textsuperscript{2}) & \pounds1,500--5,000 & 3,750--27,800$\times$ \\
+Room-scale + 3D model/BIM deliverable & \pounds3,000--15,000+ & 7,500--83,000$\times$ \\
+Matterport virtual tour (150\,m\textsuperscript{2}) & \pounds380--760 & 950--4,200$\times$ \\
+Individual artifact (simple geometry) & \pounds80--180 & 200--1,000$\times$ \\
+Heritage-grade artifact scan & \pounds300--1,000+ & 750--5,500$\times$ \\
+On-site technician day rate & \pounds750--2,500 & --- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\noindent\textbf{Local providers identified:} Scancast (Manchester, art/sculpture specialist), Manchester Measured Survey, Manchester Metrology (Scanology reseller), ScanM2 (Faro/Leica architectural), Castle Keep Surveys (heritage laser scanning), Design 79 Solutions (Cheshire, from \pounds80+VAT per object), and the University of Manchester's Matterport heritage project (People's History Museum, The Whitworth, Band on the Wall).
+
+\begin{technote}{Complementary, Not Competing}
+Commercial scanning delivers metrically calibrated, engineering-grade data---sub-millimetre LIDAR accuracy, CAD/BIM deliverables, and regulatory compliance. The \acrshort{3dgs} pipeline produces photorealistic novel-view-synthesis assets optimised for visual experience rather than measurement. The two approaches are \emph{complementary}: LIDAR for structural documentation, Gaussian splats for experiential preservation. For cultural heritage applications where the goal is capturing \emph{how a space feels} rather than its precise dimensions, the AI pipeline offers a viable and dramatically more accessible alternative.
+\end{technote}
+
+At \pounds0.18--0.40 per scene (cloud compute), the gaussian-toolkit pipeline enables cultural organisations to digitise their entire programme of events---every exhibition, every installation, every performance space---at a cost that would cover barely a single room under commercial scanning rates. This democratisation of volumetric capture is the central value proposition of the project.

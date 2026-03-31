@@ -53,7 +53,7 @@ Before beginning installation, verify that your system meets the following requi
 
 \begin{lstlisting}[language=bash, caption={Installing the \texttt{gaussian-toolkit}.}, label={lst:install}]
 # 1. Clone the repository
-git clone https://github.com/dreamlab-ai/gaussian-toolkit.git
+git clone https://github.com/DreamLab-AI/Video-to-Gaussian.git
 cd gaussian-toolkit
 
 # 2. Pull the pre-built Docker images (approximately 30 GB)
@@ -100,7 +100,7 @@ For cloud deployment, the \texttt{gaussian-toolkit} provides a one-command setup
 curl -fsSL https://get.docker.com | sh
 sudo nvidia-ctk runtime configure --runtime=docker
 sudo systemctl restart docker
-git clone https://github.com/dreamlab-ai/gaussian-toolkit.git
+git clone https://github.com/DreamLab-AI/Video-to-Gaussian.git
 cd gaussian-toolkit && docker compose up -d
 \end{lstlisting}
 
