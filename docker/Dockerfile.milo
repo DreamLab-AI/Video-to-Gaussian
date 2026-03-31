@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Install PyTorch 2.3.1 + CUDA 11.8
-RUN pip3 install --break-system-packages \
+RUN pip3 install \
     torch==2.3.1 torchvision==0.18.1 torchaudio==2.3.1 \
     --index-url https://download.pytorch.org/whl/cu118
 
@@ -24,17 +24,17 @@ ENV CUDA_HOME=/usr/local/cuda
 ENV TORCH_CUDA_ARCH_LIST="8.9"
 
 WORKDIR /opt/milo
-RUN pip3 install --break-system-packages --no-build-isolation submodules/diff-gaussian-rasterization/
-RUN pip3 install --break-system-packages --no-build-isolation submodules/simple-knn/
-RUN pip3 install --break-system-packages --no-build-isolation submodules/fused-ssim/
-RUN pip3 install --break-system-packages --no-build-isolation git+https://github.com/NVlabs/nvdiffrast
+RUN pip3 install --no-build-isolation submodules/diff-gaussian-rasterization/
+RUN pip3 install --no-build-isolation submodules/simple-knn/
+RUN pip3 install --no-build-isolation submodules/fused-ssim/
+RUN pip3 install --no-build-isolation git+https://github.com/NVlabs/nvdiffrast
 
 # tetra_triangulation (Delaunay, requires CGAL)
 RUN cd submodules/tetra_triangulation && cmake . && make -j$(nproc) \
-    && pip3 install --break-system-packages -e .
+    && pip3 install -e .
 
 # Python deps
-RUN pip3 install --break-system-packages \
+RUN pip3 install \
     open3d==0.19.0 trimesh scikit-image opencv-python plyfile tqdm
 
 # Verify
